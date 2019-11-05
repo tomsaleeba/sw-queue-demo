@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+
+<head>
+  <title>Service Worker - Client 2</title>
+</head>
+
+<body>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', function(event) {
+        console.log('Client 2 received message: ' + event.data)
+        event.ports[0].postMessage('Client 2 says "hello back!"')
+      })
+    }
+
+    function sendMessageToSw(msg) {
+      return new Promise(function(resolve, reject) {
+        const msgChan = new MessageChannel()
+        msgChan.port1.onmessage = function(event) {
+          if (event.data.error) {
+            return reject(event.data.error)
+          }
+          return resolve(event.data)
+        }
+        const controller = navigator.serviceWorker.controller
+        if (!controller) {
+          return reject('No sw reference available. Either there is no active ' +
+            'sw or you did a force refresh (shift + refresh)')
+        }
+        controller.postMessage('Client 2 says "' + msg +
+          '"', [msgChan.port2])
+      })
+    }
+  </script>
+</body>
+
+</html>
