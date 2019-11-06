@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+
+<head>
+  <title>Service Worker - Client 1</title>
+</head>
+
+<body>
+  <div>
+    <button onclick="doCreateObs()">Do POST</button>
+  </div>
+  <p>View <a id="bucket-link" target="_blank">bucket</a>.</p>
+  <p>Status = <span id="the-status">(nothing yet)</span></p>
+  <script>
+    if ('serviceWorker' in navigator) {
+      // Register service worker
+      navigator.serviceWorker.register('/service-worker.js').then(function(reg) {
+        console.log("SW registration succeeded. Scope is " + reg.scope)
+      }).catch(function(err) {
+        console.error("SW registration failed with error " + err)
+      })
+
+      navigator.serviceWorker.addEventListener('message', function(event) {
+        console.log('Client 1 received message: ' + event.data)
+        event.ports[0].postMessage('Client 1 says "hello back!"')
+      })
+    }
+
+    function sendMessageToSw(msg) {
+      return new Promise(function(resolve, reject) {
+        const msgChan = new MessageChannel()
+        msgChan.port1.onmessage = function(event) {
+          if (event.data.error) {
+            return reject(event.data.error)
+          }
+          return resolve(event.data)
+        }
+        const controller = navigator.serviceWorker.controller
+        if (!controller) {
+          return reject('No sw reference available. Either there is no active ' +
+            'sw or you did a force refresh (shift + refresh)')
+        }
+        controller.postMessage('Client 1 says "' + msg +
+          '"', [msgChan.port2])
+      })
+    }
+
+    async function doCreateObs() {
+      console.log('creating obs...')
+      doPost().then(() => {
+        console.log('All requests queued for obs')
+      })
+    }
+
+    const endpointPrefix = 'https://ptsv2.com/t/'
+    const bucketName = 'b7b6f72b-0bdb-4eb2-8055-bc5441b291f3'
+    const bucketUrl = endpointPrefix + bucketName
+    document.getElementById('bucket-link').setAttribute('href', bucketUrl)
+
+    async function doPost(reqType) {
+      try {
+        setStatus('processing...')
+        const resp = await fetch(`${bucketUrl}/post`, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            uniqueId: Date.now(),
+            foo: 'bar'
+          }),
+        })
+        setStatus('finished')
+      } catch (err) {
+        setStatus('error')
+        // FIXME catch errors. We need to determine if an error is real or if the
+        // request has been queued. Perhaps we ignore the thrown error and wait for
+        // the SW to send us a message
+      }
+      // FIXME support when no service worker is present
+    }
+
+    function setStatus(status) {
+      document.getElementById('the-status').innerText = status
+    }
+
+    // async function doManagedFetch(url, req) {
+    //   try {
+    //     const resp = await fetch(url, req)
+    //     const result = await handleJsonResp(resp, req)
+    //     return result
+    //   } catch (err) {
+    //     let msg = `Failed while doing fetch() with\n`
+    //     msg += `  URL='${url}'\n`
+    //     msg += `  Req body='${JSON.stringify(req, null, 2)}'`
+    //     throw chainedError(msg, err)
+    //   }
+    // }
+    //
+    // async function handleJsonResp(resp) {
+    //   const isJson = isRespJson(resp)
+    //   const isRespOk = resp.ok
+    //   try {
+    //     if (isRespOk && isJson) {
+    //       return resp.json()
+    //     }
+    //   } catch (err) {
+    //     throw chainedError('Failed while parsing JSON response', err)
+    //   }
+    //   // resp either NOT ok or NOT JSON, prep nice error msg
+    //   const bodyAccessor = isJson ? 'json' : 'text'
+    //   const bodyPromise = resp.bodyUsed ?
+    //     Promise.resolve('(body already used)') :
+    //     resp[bodyAccessor]()
+    //   const body = await bodyPromise
+    //   const trimmedBody =
+    //     typeof body === 'string' ?
+    //     body.substr(0, 300) :
+    //     JSON.stringify(body).substr(0, 300)
+    //   let msg = `\nResp details:\n`
+    //   msg += `  is ok=${isRespOk},\n`
+    //   msg += `  is JSON=${isJson}\n`
+    //   msg += `  status=${resp.status}\n`
+    //   msg += `  statusText='${resp.statusText}'\n`
+    //   msg += `  headers=${JSON.stringify(resp.headers)}\n`
+    //   msg += `  url=${resp.url}\n`
+    //   msg += `  body first 300 chars='${trimmedBody}'\n`
+    //   const err = new Error(msg)
+    //   err.httpStatus = resp.status
+    //   throw err
+    // }
+  </script>
+</body>
+
+</html>
