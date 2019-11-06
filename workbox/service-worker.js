@@ -20,9 +20,6 @@ const bgSyncPlugin = new workbox.backgroundSync.Plugin('myQueueName', {
           `Request for '${entry.request.url}' ` +
             `has been replayed in queue '${this._name}'`,
         )
-        for (let curr of resp.headers) {
-          console.log(curr)
-        }
         // FIXME if the request just done was for an obs, now we need to:
         //  pull the ID from the response
         //  unshift the obsfields and photos onto the queue
@@ -43,10 +40,27 @@ const bgSyncPlugin = new workbox.backgroundSync.Plugin('myQueueName', {
 })
 
 workbox.routing.registerRoute(
-  /https:\/\/ptsv2.com\/t\/.*/,
+  /http:\/\/localhost:3000\/v1\/.*/,
   new workbox.strategies.NetworkOnly({
     plugins: [bgSyncPlugin],
   }),
+  'POST',
+)
+
+const handler = async ({ url, event, params }) => {
+  console.debug('Service worker processing POSTed bundle')
+  const body = await event.request.json()
+  // TODO
+  //   stash fields and photos (IndexedDB? Is this always available when SW is)
+  //   make obs req, then the hook on the resp will take over
+  return new Response(
+    JSON.stringify({ result: 'queued', photoCount: body.photos.length }),
+  )
+}
+
+workbox.routing.registerRoute(
+  'http://local.service-worker/queue/obs-bundle',
+  handler,
   'POST',
 )
 

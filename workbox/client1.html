@@ -7,11 +7,28 @@
 
 <body>
   <div>
-    <button onclick="doCreateObs()">Do POST</button>
+    Service worker support = <span id="sw-support">(not checked yet)</span>
+    <button onclick="refreshSwStatus()">Refresh</button>
+    <button onclick="killSw()">Kill SW</button>
+    (Note: reload the page to get the SW running again)
   </div>
-  <p>View <a id="bucket-link" target="_blank">bucket</a>.</p>
+  <div>
+    <button onclick="doCreateObs()">Create observation</button>
+  </div>
   <p>Status = <span id="the-status">(nothing yet)</span></p>
+  <h1>Observations</h1>
+  <div>
+    <button onclick="refreshObs()">Refresh list</button>
+  </div>
+  <ul id="obs-list">
+    <li>(empty)</li>
+  </ul>
   <script>
+    const endpointPrefix = 'http://localhost:3000/v1'
+    const someJpg = new Blob(Uint8Array.from([0xFF, 0xD8, 0xFF, 0xDB]), {
+      type: 'image/jpeg'
+    })
+
     if ('serviceWorker' in navigator) {
       // Register service worker
       navigator.serviceWorker.register('/service-worker.js').then(function(reg) {
@@ -47,89 +64,121 @@
 
     async function doCreateObs() {
       console.log('creating obs...')
-      doPost().then(() => {
-        console.log('All requests queued for obs')
+      setStatus('processing...')
+      const obs = {
+        uniqueId: Date.now(),
+        foo: 'bar'
+      }
+      const photo1 = {
+        file: someJpg
+      }
+      const photo2 = {
+        file: someJpg
+      }
+      const isNoSwSupport = !('serviceWorker' in navigator &&
+        navigator.serviceWorker.controller)
+      if (isNoSwSupport) {
+        console.debug('No SW support, doing it all ourselves')
+        try {
+          const resp = await doPost('observations', JSON.stringify(obs))
+          const obsId = (await resp.json()).obsId
+          const formData1 = new FormData()
+          formData1.append('file', photo1.file)
+          formData1.append('obsId', obsId)
+          await doPost('photos', formData1)
+          formData2.append('file', photo2.file)
+          formData2.append('obsId', obsId)
+          await doPost('photos', formData2)
+          setStatus('finished')
+        } catch (err) {
+          console.error('Failed to POST obs record', err)
+          setStatus('error')
+        }
+        // FIXME need to also POST photos
+        // FIXME need retry logic
+        return
+      }
+      console.debug('We have SW support, POSTing bundle')
+      const resp = await fetch('http://local.service-worker/queue/obs-bundle', {
+        method: 'POST',
+        // FIXME binary data is NOT going to like being stringified
+        body: JSON.stringify({
+          obs,
+          photos: [photo1, photo2]
+        })
       })
+      if (resp.ok) {
+        console.log('All requests queued for obs', JSON.stringify(await resp.json()))
+        setStatus('finished')
+        return
+      }
+      // our SW enqueue code failed
+      // FIXME do we fallback to the "no service worker" approach, or retry?
+      console.error(resp.statusText)
     }
 
-    const endpointPrefix = 'https://ptsv2.com/t/'
-    const bucketName = 'b7b6f72b-0bdb-4eb2-8055-bc5441b291f3'
-    const bucketUrl = endpointPrefix + bucketName
-    document.getElementById('bucket-link').setAttribute('href', bucketUrl)
+    async function refreshObs() {
+      console.debug('refreshing obs list...')
+      const resp = await fetch(`${endpointPrefix}/observations`, {
+        method: 'GET',
+        mode: 'cors',
+      })
+      const obs = await resp.json()
+      document.getElementById('obs-list').innerHTML = obs.reduce((accum, curr) => {
+        accum += `<li>ID=${curr.id}, ${curr.photos.length} photos</li>`
+        return accum
+      }, '')
+    }
 
-    async function doPost(reqType) {
+    async function doPost(reqType, body) {
       try {
-        setStatus('processing...')
-        const resp = await fetch(`${bucketUrl}/post`, {
+        const resp = await fetch(`${endpointPrefix}/${reqType}`, {
           method: 'POST',
-          mode: 'no-cors',
+          mode: 'cors',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            uniqueId: Date.now(),
-            foo: 'bar'
-          }),
+          body
         })
-        setStatus('finished')
+        return resp
       } catch (err) {
-        setStatus('error')
-        // FIXME catch errors. We need to determine if an error is real or if the
-        // request has been queued. Perhaps we ignore the thrown error and wait for
-        // the SW to send us a message
+        throw err
       }
-      // FIXME support when no service worker is present
     }
 
     function setStatus(status) {
       document.getElementById('the-status').innerText = status
     }
 
-    // async function doManagedFetch(url, req) {
-    //   try {
-    //     const resp = await fetch(url, req)
-    //     const result = await handleJsonResp(resp, req)
-    //     return result
-    //   } catch (err) {
-    //     let msg = `Failed while doing fetch() with\n`
-    //     msg += `  URL='${url}'\n`
-    //     msg += `  Req body='${JSON.stringify(req, null, 2)}'`
-    //     throw chainedError(msg, err)
-    //   }
-    // }
-    //
-    // async function handleJsonResp(resp) {
-    //   const isJson = isRespJson(resp)
-    //   const isRespOk = resp.ok
-    //   try {
-    //     if (isRespOk && isJson) {
-    //       return resp.json()
-    //     }
-    //   } catch (err) {
-    //     throw chainedError('Failed while parsing JSON response', err)
-    //   }
-    //   // resp either NOT ok or NOT JSON, prep nice error msg
-    //   const bodyAccessor = isJson ? 'json' : 'text'
-    //   const bodyPromise = resp.bodyUsed ?
-    //     Promise.resolve('(body already used)') :
-    //     resp[bodyAccessor]()
-    //   const body = await bodyPromise
-    //   const trimmedBody =
-    //     typeof body === 'string' ?
-    //     body.substr(0, 300) :
-    //     JSON.stringify(body).substr(0, 300)
-    //   let msg = `\nResp details:\n`
-    //   msg += `  is ok=${isRespOk},\n`
-    //   msg += `  is JSON=${isJson}\n`
-    //   msg += `  status=${resp.status}\n`
-    //   msg += `  statusText='${resp.statusText}'\n`
-    //   msg += `  headers=${JSON.stringify(resp.headers)}\n`
-    //   msg += `  url=${resp.url}\n`
-    //   msg += `  body first 300 chars='${trimmedBody}'\n`
-    //   const err = new Error(msg)
-    //   err.httpStatus = resp.status
-    //   throw err
-    // }
+    function setSwStatus(msg) {
+      document.getElementById('sw-support').innerText = msg
+    }
+
+    function refreshSwStatus() {
+      console.debug('Checking SW support')
+      if (!('serviceWorker' in navigator)) {
+        setSwStatus('No. Not supported')
+        return
+      }
+      if (!navigator.serviceWorker.controller) {
+        setSwStatus('No. Not active')
+        return
+      }
+      setSwStatus('Yes')
+    }
+
+    async function killSw() {
+      console.debug('killing service worker')
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations()
+        for (const registration of registrations) {
+          await registration.unregister()
+        }
+        window.location.reload()
+      }
+    }
+
+    refreshSwStatus()
   </script>
 </body>
 
