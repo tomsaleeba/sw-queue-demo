@@ -20,9 +20,13 @@ const bgSyncPlugin = new workbox.backgroundSync.Plugin('myQueueName', {
           `Request for '${entry.request.url}' ` +
             `has been replayed in queue '${this._name}'`,
         )
-        // FIXME if the request just done was for an obs, now we need to:
-        //  pull the ID from the response
-        //  unshift the obsfields and photos onto the queue
+        const isForObs = resp.url.includes('/observations')
+        if (!isForObs) {
+          continue
+        }
+        console.debug('hooking response of obs creation')
+        const obs = await resp.body()
+        await onObsPostSuccess(obs, null, null, this)
       } catch (err) {
         console.error(err)
         await this.unshiftRequest(entry)
@@ -39,22 +43,87 @@ const bgSyncPlugin = new workbox.backgroundSync.Plugin('myQueueName', {
   },
 })
 
+// FIXME share this URL as config with client pages
+const endpointPrefix = 'http://localhost:3000/v1'
+
 workbox.routing.registerRoute(
-  /http:\/\/localhost:3000\/v1\/.*/,
+  new RegExp(endpointPrefix + '.*'),
   new workbox.strategies.NetworkOnly({
     plugins: [bgSyncPlugin],
   }),
   'POST',
 )
 
+function onObsPostSuccess(obsResp, photos, obsFields, queue) {
+  const obsId = obsResp.id
+  console.debug(`Running post-success block for obs ID=${obsId}`)
+  // TODO should we always pull photos and obsFields from storage?
+  // TODO should we always put reqs onto the queue?
+  const photosToProcess = photos || getPhotosFor(obsResp.uniqueId) || []
+  const obsFieldsToProcess =
+    obsFields || getObsFieldsFor(obsResp.uniqueId) || []
+  if (queue) {
+    // TODO unshift() reqs onto queue
+    return
+  }
+  for (const curr of photosToProcess) {
+    const fd = new FormData()
+    fd.append('obsId', obsId)
+    fd.append('file', curr)
+    fetch(endpointPrefix + '/photos', {
+      method: 'POST',
+      mode: 'cors',
+      body: fd,
+    })
+    // FIXME need to ensure these are retried if they fail
+  }
+  // TODO process obsFields
+}
+
 const handler = async ({ url, event, params }) => {
   console.debug('Service worker processing POSTed bundle')
-  const body = await event.request.json()
+  const formData = await event.request.formData()
   // TODO
   //   stash fields and photos (IndexedDB? Is this always available when SW is)
   //   make obs req, then the hook on the resp will take over
+  // TODO should we always put the req onto the queue?
+  fetch(endpointPrefix + '/observations', {
+    method: 'POST',
+    mode: 'cors',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: formData.get('obs'),
+  })
+    .then(resp => {
+      if (resp.ok) {
+        return resp.json()
+      }
+      // TODO should we craft an error-ish object to pass?
+      return Promise.reject(resp)
+    })
+    .then(obs => {
+      onObsPostSuccess(
+        obs,
+        formData.getAll('photos'),
+        formData.getAll('obsFields'),
+      )
+      // don't "return from fn" which would make this part of the promise
+      // chain, it will be retried separately
+    })
+    .catch(err => {
+      console.error(
+        'Failed to trigger photos and obsFields after obs success',
+        err,
+      )
+      // TODO store dependants so they can be found after the obs req is retried
+    })
   return new Response(
-    JSON.stringify({ result: 'queued', photoCount: body.photos.length }),
+    JSON.stringify({
+      result: 'queued',
+      photoCount: formData.getAll('photos').length,
+      // TODO add obsField count
+    }),
   )
 }
 

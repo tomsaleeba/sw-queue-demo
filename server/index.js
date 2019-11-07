@@ -7,7 +7,6 @@ const port = 3000
 
 app.use(cors())
 app.use(bodyParser.json())
-app.use(formidable())
 
 const dataStore = {}
 
@@ -21,7 +20,7 @@ app.post('/v1/observations', (req, res) => {
   return res.json(dataStore[id])
 })
 
-app.post('/v1/photos', (req, res) => {
+app.post('/v1/photos', formidable(), (req, res) => {
   const obsId = req.fields.obsId
   const record = dataStore[obsId]
   if (!record) {

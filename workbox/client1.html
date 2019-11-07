@@ -99,13 +99,13 @@
         return
       }
       console.debug('We have SW support, POSTing bundle')
+      const fd = new FormData()
+      fd.append('obs', JSON.stringify(obs))
+      fd.append('photos', photo1.file, 'photo1')
+      fd.append('photos', photo2.file, 'photo2')
       const resp = await fetch('http://local.service-worker/queue/obs-bundle', {
         method: 'POST',
-        // FIXME binary data is NOT going to like being stringified
-        body: JSON.stringify({
-          obs,
-          photos: [photo1, photo2]
-        })
+        body: fd
       })
       if (resp.ok) {
         console.log('All requests queued for obs', JSON.stringify(await resp.json()))
