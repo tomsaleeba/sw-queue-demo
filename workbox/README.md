@@ -17,6 +17,11 @@
      https://github.com/GoogleChrome/workbox/blob/55b7cbf743a4f542d0b1bfb7a102e063d50ca0cd/packages/workbox-background-sync/src/Queue.ts#L205.
      We could always break encapsulation and go into the IDB store and check
      for expiry ourselves
+  - can we backout of building the service worker with webpack and just use ESM
+      import statement to get what we need? The trick is making those modules
+      available. I think we'd need to define our own module as an entry point
+      that imports what we need, make sure it's built as ESM and import it from
+      the SW.
 
 # Assumption:
   - service worker is a newer API than IndexedDB so anywhere we have a SW, we'll
