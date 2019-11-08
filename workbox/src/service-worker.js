@@ -1,55 +1,50 @@
-importScripts(
-  'https://storage.googleapis.com/workbox-cdn/releases/4.3.1/workbox-sw.js',
-)
+import { Plugin as BackgroundSyncPlugin } from 'workbox-background-sync/Plugin.mjs'
+import { Queue } from 'workbox-background-sync/Queue.mjs'
+import { registerRoute } from 'workbox-routing/registerRoute.mjs'
+import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
+import { endpointPrefix } from './constants.mjs'
 
-if (workbox) {
-  console.log(`Yay! Workbox is loaded 🎉`)
-} else {
-  console.log(`Boo! Workbox didn't load 😬`)
-}
 console.log('SW Startup!')
 
-const bgSyncPlugin = new workbox.backgroundSync.Plugin('myQueueName', {
-  maxRetentionTime: 24 * 60, // Retry for max of 24 Hours (specified in minutes)
-  async onSync() {
-    let entry
-    while ((entry = await this.shiftRequest())) {
-      try {
-        const resp = await fetch(entry.request.clone())
-        console.log(
-          `Request for '${entry.request.url}' ` +
-            `has been replayed in queue '${this._name}'`,
-        )
-        const isForObs = resp.url.includes('/observations')
-        if (!isForObs) {
-          continue
-        }
-        console.debug('hooking response of obs creation')
-        const obs = await resp.body()
-        await onObsPostSuccess(obs, null, null, this)
-      } catch (err) {
-        console.error(err)
-        await this.unshiftRequest(entry)
-        console.log(
-          `Request for '${entry.request.url}' ` +
-            `failed to replay, putting it back in queue '${this._name}'`,
-        )
-        // FIXME if a 4xx response, we need to do something more. Can we
-        // rollback the whole obs? Probably not
-        throw new Error('queue-replay-failed', { name: this._name })
-      }
-    }
-    // FIXME hook end of queue processing to notify clients to refresh
-  },
-})
+// FIXME it seems we can't use the one queue for both the plugin AND our own use. Should we have a separate queue for our retries? It would let us have separate logic for those if we needed.
+// We could have the queue we push everything to from the synth endpoint. It's easy to fire all that off. Then we have a queue for the obs endpoint so we can hook those responses and the photos and obsfields endpoints get their own vanilla queues.
+const queue = new Queue('obs-dependant-queue')
 
-// FIXME share this URL as config with client pages
-const endpointPrefix = 'http://localhost:3000/v1'
-
-workbox.routing.registerRoute(
-  new RegExp(endpointPrefix + '.*'),
-  new workbox.strategies.NetworkOnly({
-    plugins: [bgSyncPlugin],
+registerRoute(
+  `${endpointPrefix}/observations`,
+  new NetworkOnly({
+    plugins: [
+      new BackgroundSyncPlugin('obs-queue', {
+        maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
+        async onSync() {
+          let entry
+          while ((entry = await this.shiftRequest())) {
+            try {
+              const resp = await fetch(entry.request.clone())
+              console.log(
+                `Request for '${entry.request.url}' ` +
+                  `has been replayed in queue '${this._name}'`,
+              )
+              const obs = await resp.body()
+              await onObsPostSuccess(obs, null, null, this)
+              // FIXME send a msg to refresh to UI? need onObsPostSuccess to be properly await-able too
+            } catch (err) {
+              console.error(err)
+              await this.unshiftRequest(entry)
+              console.log(
+                `Request for '${entry.request.url}' ` +
+                  `failed to replay, putting it back in queue '${this._name}'`,
+              )
+              // FIXME if a 4xx response, we need to do something more. Can we
+              // rollback the whole obs? We only need to DELETE the obs and the rest
+              // will fall
+              throw new Error('queue-replay-failed', { name: this._name })
+            }
+          }
+          // FIXME hook end of queue processing to notify clients to refresh
+        },
+      }),
+    ],
   }),
   'POST',
 )
@@ -70,6 +65,7 @@ function onObsPostSuccess(obsResp, photos, obsFields, queue) {
     const fd = new FormData()
     fd.append('obsId', obsId)
     fd.append('file', curr)
+    // FIXME should we await these or push onto queue?
     fetch(endpointPrefix + '/photos', {
       method: 'POST',
       mode: 'cors',
@@ -110,6 +106,7 @@ const handler = async ({ url, event, params }) => {
       )
       // don't "return from fn" which would make this part of the promise
       // chain, it will be retried separately
+      // FIXME should we send msg to refresh to UI? Need to also await onObsPostSuccess
     })
     .catch(err => {
       console.error(
@@ -127,11 +124,7 @@ const handler = async ({ url, event, params }) => {
   )
 }
 
-workbox.routing.registerRoute(
-  'http://local.service-worker/queue/obs-bundle',
-  handler,
-  'POST',
-)
+registerRoute('http://local.service-worker/queue/obs-bundle', handler, 'POST')
 
 // Install Service Worker
 self.addEventListener('install', function(event) {

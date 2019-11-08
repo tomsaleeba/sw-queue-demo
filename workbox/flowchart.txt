@@ -1,0 +1,38 @@
+st=>start: Start
+e=>end: Trigger UI refresh
+sw=>condition: SW supported?
+
+synCall=>operation: Make call to synthetic SW endpoint
+storeDepIdb=>operation: store dependent reqs in IDB
+swCallInat=>operation: make call (FIXME or push to queue?) to real iNat obs endpoint
+swObsReqSuc=>condition: obs req success?
+reqOnQueue=>operation: put req back onto retry queue
+swProcDep=>operation: load deps from IDB, inject obs ID into reqs
+swProcDepCall=>operation: make calls (FIMXE or unshift onto queue?)
+allDepSuc=>condition: all reqs success?
+swDepFailReason=>condition: is 4xx failure?
+swDepRetry=>operation: push failures back onto queue
+swDep4xx=>operation: FIXME notify user of failure? Rollback partial obs?
+
+noSwCallInat=>operation: Make call to real iNat obs endpoint
+noSwObsReqSuc=>condition: obs req success?
+retry=>operation: Use retry-with-backoff strategy
+noSwProcDeps=>operation: load deps from IDB, craft reqs with obs ID, make calls
+
+
+st->sw
+sw(yes)->synCall->storeDepIdb->swCallInat->swObsReqSuc
+sw(no)->noSwCallInat->noSwObsReqSuc
+noSwObsReqSuc(yes)->noSwProcDeps
+noSwObsReqSuc(no)->retry(top)->noSwCallInat
+swObsReqSuc(no)->reqOnQueue(top)->swCallInat
+swObsReqSuc(yes)->swProcDep->swProcDepCall->allDepSuc
+allDepSuc(yes)->e
+allDepSuc(no)->swDepFailReason
+swDepFailReason(yes)->swDep4xx
+swDepFailReason(no)->swDepRetry(top)->swProcDepCall
+
+
+FIXME, add
+- is offline, then wait for sync event
+- items expiring on queue
