@@ -1,7 +1,7 @@
 module.exports = {
   configureWebpack: {
     entry: {
-      sw: ['./src/service-worker.js'],
+      ['sw-helper']: ['./src/sw-helper.js'],
     },
     plugins: [],
   },

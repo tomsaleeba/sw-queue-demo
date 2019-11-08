@@ -2,7 +2,7 @@ import { Plugin as BackgroundSyncPlugin } from 'workbox-background-sync/Plugin.m
 import { Queue } from 'workbox-background-sync/Queue.mjs'
 import { registerRoute } from 'workbox-routing/registerRoute.mjs'
 import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
-import { endpointPrefix } from './constants.mjs'
+import { endpointPrefix } from './js/sw-helper.js'
 
 console.log('SW Startup!')
 
