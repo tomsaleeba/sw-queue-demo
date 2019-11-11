@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "core-js": "^3.3.2",
-    "idb": "^4.0.5",
+    "dexie": "^2.0.4",
     "magic-string": "^0.25.4",
     "rollup": "^1.26.4",
     "rollup-plugin-node-resolve": "^5.2.0",

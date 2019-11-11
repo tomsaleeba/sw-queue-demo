@@ -16,10 +16,15 @@
     <p>Status = {{ theStatus }}</p>
     <h1>Observations</h1>
     <div>
-      <button onclick="refreshObs()">Refresh list</button>
+      <button @click="refreshObs">Refresh list</button>
     </div>
-    <ul id="obs-list">
-      <li>(empty)</li>
+    <ul class="obs-list">
+      <li v-for="curr of obsList" :key="curr.id" class="obs-item">
+        <div>ID={{ curr.id }}</div>
+        <div>uniqueID={{ curr.uniqueId }}</div>
+        <div>{{ curr.photos.length }} photos</div>
+      </li>
+      <li v-if="!obsList.length">(empty)</li>
     </ul>
   </div>
 </template>
@@ -37,6 +42,7 @@ export default {
     return {
       theStatus: '(nothing yet)',
       swStatus: '(not checked)',
+      obsList: [],
     }
   },
   mounted() {
@@ -66,7 +72,7 @@ export default {
       console.log('creating obs...')
       this.theStatus = 'processing...'
       const obs = {
-        uniqueId: Date.now(),
+        uniqueId: btoa(Date.now()),
         foo: 'bar',
       }
       const photo1 = {
@@ -81,21 +87,21 @@ export default {
       if (isNoSwSupport) {
         console.debug('No SW support, doing it all ourselves')
         try {
-          const resp = await this.doPost('observations', JSON.stringify(obs))
-          const obsId = (await resp.json()).obsId
+          const resp = await this.doJsonPost('observations', obs)
+          const obsId = (await resp.json()).id
           const formData1 = new FormData()
           formData1.append('file', photo1.file)
           formData1.append('obsId', obsId)
-          await this.doPost('photos', formData1)
+          await this.doFormPost('photos', formData1)
+          const formData2 = new FormData()
           formData2.append('file', photo2.file)
           formData2.append('obsId', obsId)
-          await this.doPost('photos', formData2)
+          await this.doFormPost('photos', formData2)
           this.theStatus = 'finished'
         } catch (err) {
           console.error('Failed to POST obs record', err)
           this.theStatus = 'error'
         }
-        // FIXME need to also POST photos
         // FIXME need retry logic
         return
       }
@@ -126,29 +132,30 @@ export default {
         method: 'GET',
         mode: 'cors',
       })
-      const obs = await resp.json()
-      document.getElementById('obs-list').innerHTML = obs.reduce(
-        (accum, curr) => {
-          accum += `<li>ID=${curr.id}, ${curr.photos.length} photos</li>`
-          return accum
-        },
-        '',
-      )
+      this.obsList = await resp.json()
     },
-    async doPost(reqType, body) {
+    async _doPost(reqType, body, headers) {
       try {
         const resp = await fetch(`${endpointPrefix}/${reqType}`, {
           method: 'POST',
           mode: 'cors',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          ...headers,
           body,
         })
         return resp
       } catch (err) {
         throw err
       }
+    },
+    doJsonPost(reqType, body) {
+      return this._doPost(reqType, JSON.stringify(body), {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+    },
+    doFormPost(reqType, body) {
+      return this._doPost(reqType, body, {})
     },
     refreshSwStatus() {
       console.debug('Checking SW support')
@@ -184,5 +191,16 @@ export default {
   text-align: center;
   color: #2c3e50;
   margin-top: 60px;
+}
+
+.obs-list {
+  list-style: none;
+  max-width: 10em;
+  margin: 0 auto;
+}
+
+.obs-item {
+  font-family: monospace;
+  margin-bottom: 1em;
 }
 </style>

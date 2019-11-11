@@ -6,15 +6,14 @@ const app = express()
 const port = 3000
 
 app.use(cors())
-app.use(bodyParser.json())
 
 const dataStore = {}
 
-app.get('/v1/observations', (req, res) => {
+app.get('/v1/observations', bodyParser.json(), (req, res) => {
   return res.json(Object.values(dataStore))
 })
 
-app.post('/v1/observations', (req, res) => {
+app.post('/v1/observations', bodyParser.json(), (req, res) => {
   const id = Date.now()
   dataStore[id] = { id, photos: [], ...req.body }
   return res.json(dataStore[id])

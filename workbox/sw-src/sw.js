@@ -3,9 +3,15 @@ import { Queue } from 'workbox-background-sync/Queue.mjs'
 import { registerRoute } from 'workbox-routing/registerRoute.mjs'
 import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
 import { endpointPrefix } from '../src/constants.mjs'
-import { openDB, deleteDB, wrap, unwrap } from 'idb' // FIXME change to be the things we use
+import Dexie from 'dexie'
 
 console.log('SW Startup!')
+
+const db = new Dexie('WowSwDb')
+
+db.version(1).stores({
+  deps: `uniqueId`, // requests dependent on an obs resp
+})
 
 // FIXME it seems we can't use the one queue for both the plugin AND our own use. Should we have a separate queue for our retries? It would let us have separate logic for those if we needed.
 // We could have the queue we push everything to from the synth endpoint. It's easy to fire all that off. Then we have a queue for the obs endpoint so we can hook those responses and the photos and obsfields endpoints get their own vanilla queues.
@@ -80,9 +86,14 @@ function onObsPostSuccess(obsResp, photos, obsFields, queue) {
 const handler = async ({ url, event, params }) => {
   console.debug('Service worker processing POSTed bundle')
   const formData = await event.request.formData()
+  const obs = JSON.parse(formData.get('obs'))
   // TODO
   //   stash fields and photos (IndexedDB? Is this always available when SW is)
   //   make obs req, then the hook on the resp will take over
+  await db.deps.put({
+    uniqueId: obs.uniqueId,
+    // FIXME get the photos and obsfields
+  })
   // TODO should we always put the req onto the queue?
   fetch(endpointPrefix + '/observations', {
     method: 'POST',
@@ -90,7 +101,7 @@ const handler = async ({ url, event, params }) => {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: formData.get('obs'),
+    body: JSON.stringify(obs),
   })
     .then(resp => {
       if (resp.ok) {

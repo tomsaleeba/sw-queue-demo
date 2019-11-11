@@ -6,6 +6,7 @@ export default {
   output: {
     file: 'dist/sw-dist.js',
     format: 'iife',
+    sourcemap: true,
   },
   plugins: [
     resolve(), // lets us find dependencies in node_modules
