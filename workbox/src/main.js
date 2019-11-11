@@ -10,7 +10,7 @@ new Vue({
 if ('serviceWorker' in navigator) {
   // Register service worker
   navigator.serviceWorker
-    .register('/service-worker.mjs')
+    .register('/sw-dist.js')
     .then(function(reg) {
       console.log('SW registration succeeded. Scope is ' + reg.scope)
     })

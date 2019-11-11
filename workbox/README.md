@@ -21,9 +21,10 @@
       import statement to get what we need? The trick is making those modules
       available. I think we'd need to define our own module as an entry point
       that imports what we need, make sure it's built as ESM and import it from
-      the SW. Answer: no, there's not support for `import` https://stackoverflow.com/a/53439890/1410035.
+      the SW. **Answer**: no, there's not support for `import` https://stackoverflow.com/a/53439890/1410035.
       Maybe if we can build the helper as a module that imports itself to a
       variable, then `importScripts` that into the sw
+  - do we still get a NOOP service worker for free? If not, how do we make one?
 
 # Assumption:
   - service worker is a newer API than IndexedDB so anywhere we have a SW, we'll
