@@ -26,6 +26,12 @@
       Maybe if we can build the helper as a module that imports itself to a
       variable, then `importScripts` that into the sw
   - do we still get a NOOP service worker for free? If not, how do we make one?
+  - why do we see the log msg for a synthetic error once on the server but the
+      error doesn't seem to actually happen. But if we see the log msg twice,
+      then the error does happen.
+  - what happens if we queue up a few obs as fast as the UI will let us? Do
+      things get jumbled, do we just process one obs fully, then the next? What
+      if something goes wrong, where do we stop?
 
 # Assumption:
   - service worker is a newer API than IndexedDB so anywhere we have a SW, we'll

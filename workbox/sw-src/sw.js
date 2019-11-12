@@ -7,6 +7,7 @@ import {
   obsFieldName,
   obsFieldsFieldName,
   photosFieldName,
+  triggerQueueProcessingMsg,
 } from '../src/constants.mjs'
 import Dexie from 'dexie'
 
@@ -90,53 +91,50 @@ async function onObsPostSuccess(obsResp) {
     console.warn(`No deps found for obsUnqiueId=${obsUnqiueId}`)
     return
   }
-  for (const curr of depsRecord.photos) {
-    const fd = new FormData()
-    fd.append('obsId', obsId)
-    fd.append('file', curr)
-    console.debug('Pushing a photo to the queue')
-    await depsQueue.pushRequest({
-      request: new Request(endpointPrefix + '/photos', {
-        method: 'POST',
-        mode: 'cors',
-        body: fd,
-      }),
-    })
-  }
-  for (const curr of depsRecord.obsFields) {
-    console.debug('Pushing an obsField to the queue')
-    await depsQueue.pushRequest({
-      request: new Request(endpointPrefix + '/obs-fields', {
-        method: 'POST',
-        mode: 'cors',
-        headers: {
-          'Content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          field: curr,
-          obsId,
-        }),
-      }),
-    })
-  }
-  // FIXME do we need to separately define workbox endpoints for the /photos
-  // and /obs-fields endpoints so they have retry, or is the retry that's built
-  // into this queue enough?
-  // FIXME are we doing the right thing by pushing out reqs and then waiting
-  // for the whole queue to process? Presumably this means we process one obs
-  // fully before the next can start, which is what we want.
   try {
-    console.debug('Triggering deps queue replay')
-    // FIXME replayRequests() will only throw when "failed to fetch". It doesn't
-    // check the resp status code. We should probably roll our own replayer that
-    // *does* check the status code and at least log it. We need to figure out
-    // what to do with non 2xx resps
-    await depsQueue.replayRequests()
+    for (const curr of depsRecord.photos) {
+      const fd = new FormData()
+      fd.append('obsId', obsId)
+      fd.append('file', curr)
+      console.debug('Pushing a photo to the queue')
+      await depsQueue.pushRequest({
+        request: new Request(endpointPrefix + '/photos', {
+          method: 'POST',
+          mode: 'cors',
+          body: fd,
+        }),
+      })
+    }
+    for (const curr of depsRecord.obsFields) {
+      console.debug('Pushing an obsField to the queue')
+      await depsQueue.pushRequest({
+        request: new Request(endpointPrefix + '/obs-fields', {
+          method: 'POST',
+          mode: 'cors',
+          headers: {
+            'Content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            field: curr,
+            obsId,
+          }),
+        }),
+      })
+    }
   } catch (err) {
-    console.debug('caught error from replayRequests(), rethrowing...')
+    // Note: error related to queue processing, which if we're connected to the
+    // network will be triggered by pushing items, won't be caught here.
+    console.debug('caught error while populating queue, rethrowing...')
     throw err
   }
-  console.debug('Cleaning up after ourselves')
+  // FIXME we currently have no way to know if the requests succeed but aren't
+  // ok (503, 400, etc). To achieve this, we need to roll our own replayer and
+  // use that on our deps queue. Maybe it's ok without this, as we don't expect
+  // non-200 responses. But they might happen and we need to know!
+  console.debug(
+    'Cleaning up after ourselves. All requests have been generated so' +
+      ' we do not need this data anymore',
+  )
   await db.deps.delete(obsUnqiueId)
 }
 
@@ -214,6 +212,12 @@ self.addEventListener('activate', function(event) {
 })
 
 self.addEventListener('message', function(event) {
+  if (event.data === triggerQueueProcessingMsg) {
+    console.log('triggering deps queue processing at request of client')
+    depsQueue.replayRequests()
+    // FIXME do we need to catch errors?
+    return
+  }
   console.log('SW received message: ' + event.data)
   event.ports[0].postMessage('SW says "Hello back!"')
 })

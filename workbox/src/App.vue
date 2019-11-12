@@ -9,8 +9,13 @@
       (Note: reload the page to get the SW running again)
     </p>
     <p>
-      <button @click="sendMessageToSw">Send msg to SW</button>
+      <button @click="sendHelloMessageToSw">Send msg to SW</button>
       (Note: look in the console)
+    </p>
+    <p>
+      <button @click="triggerDepsQueue">Trigger deps queue processing</button>
+      (Note: be careful, I think you can cause a race condition by processing
+      the queue multiple times concurrently)
     </p>
     <p>
       <button @click="doCreateObs">Create observation</button>
@@ -38,6 +43,7 @@ import {
   obsFieldName,
   obsFieldsFieldName,
   photosFieldName,
+  triggerQueueProcessingMsg,
 } from './constants.mjs'
 
 const someJpg = new Blob(Uint8Array.from([0xff, 0xd8, 0xff, 0xdb]), {
@@ -57,8 +63,10 @@ export default {
     this.refreshSwStatus()
   },
   methods: {
-    sendMessageToSw() {
-      const msg = 'Hello from App.vue'
+    sendHelloMessageToSw() {
+      this._sendMessageToSw('Client 1 says "Hello from App.vue"')
+    },
+    _sendMessageToSw(msg) {
       return new Promise(function(resolve, reject) {
         const msgChan = new MessageChannel()
         msgChan.port1.onmessage = function(event) {
@@ -74,7 +82,7 @@ export default {
               'sw or you did a force refresh (shift + refresh)',
           )
         }
-        controller.postMessage('Client 1 says "' + msg + '"', [msgChan.port2])
+        controller.postMessage(msg, [msgChan.port2])
       })
     },
     async doCreateObs() {
@@ -221,6 +229,9 @@ export default {
         }
         window.location.reload()
       }
+    },
+    triggerDepsQueue() {
+      this._sendMessageToSw(triggerQueueProcessingMsg)
     },
   },
 }
