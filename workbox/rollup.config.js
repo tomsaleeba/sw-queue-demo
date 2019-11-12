@@ -1,6 +1,15 @@
 import resolve from 'rollup-plugin-node-resolve'
 import { terser } from 'rollup-plugin-terser'
 
+const plugins = [
+  resolve(), // lets us find dependencies in node_modules
+  buildGuira487Plugin(),
+]
+if (process.env.DO_MINIFY) {
+  console.log('Minification *will* be performed!')
+  plugins.push(terser())
+}
+
 export default {
   input: 'sw-src/sw.js',
   output: {
@@ -8,11 +17,7 @@ export default {
     format: 'iife',
     sourcemap: true,
   },
-  plugins: [
-    resolve(), // lets us find dependencies in node_modules
-    buildGuira487Plugin(),
-    terser(),
-  ],
+  plugins,
 }
 
 // Removes process.env.* references that explode browsers

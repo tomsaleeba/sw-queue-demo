@@ -7,6 +7,8 @@ const port = 3000
 
 app.use(cors())
 
+const allowSyntheticErrors = !process.env.DISABLE_SYNTH_ERRORS
+
 const dataStore = {}
 
 app.get('/v1/observations', bodyParser.json(), (req, res) => {
@@ -15,8 +17,10 @@ app.get('/v1/observations', bodyParser.json(), (req, res) => {
 
 app.post('/v1/observations', bodyParser.json(), (req, res) => {
   const id = Date.now()
-  dataStore[id] = { id, photos: [], ...req.body }
-  return res.json(dataStore[id])
+  dataStore[id] = { id, photos: [], obsFields: [], ...req.body }
+  setTimeout(() => {
+    res.json(dataStore[id])
+  }, 1500)
 })
 
 app.post('/v1/photos', formidable(), (req, res) => {
@@ -25,9 +29,36 @@ app.post('/v1/photos', formidable(), (req, res) => {
   if (!record) {
     return res.status(404).json({ msg: 'No obs found for ID=' + obsId })
   }
+  const isFirstPhoto = record.photos.length === 1
+  if (allowSyntheticErrors && isReturnSyntheticError()) {
+    console.log(
+      new Date().toLocaleString() + '  triggering a synthetic error on /photos',
+    )
+    // thanks https://stackoverflow.com/a/56642321/1410035
+    return res.connection.destroy()
+  }
   record.photos.push({ ...req.fields, file: 'discarded for demo' })
   dataStore[obsId] = record
-  return res.json(req.body)
+  setTimeout(() => {
+    res.json(record)
+  }, 1500)
+})
+
+app.post('/v1/obs-fields', bodyParser.json(), (req, res) => {
+  const obsId = req.body.obsId
+  const record = dataStore[obsId]
+  if (!record) {
+    return res.status(404).json({ msg: 'No obs found for ID=' + obsId })
+  }
+  record.obsFields.push(req.body.field)
+  dataStore[obsId] = record
+  setTimeout(() => {
+    res.json(record)
+  }, 1500)
 })
 
 app.listen(port, () => console.log(`Example app listening on port ${port}!`))
+
+function isReturnSyntheticError() {
+  return Math.random() > 0.7
+}

@@ -4,11 +4,13 @@
   "private": true,
   "scripts": {
     "serve": "vue-cli-service serve",
-    "build": "vue-cli-service build && rollup -c"
+    "build": "vue-cli-service build && rollup -c",
+    "build:watch": "nodemon --ext vue,js,mjs,json --watch src --watch sw-src --watch package.json --exec bash run-loop.sh"
   },
   "dependencies": {
     "core-js": "^3.3.2",
     "dexie": "^2.0.4",
+    "fetch-retry": "^2.2.3",
     "magic-string": "^0.25.4",
     "rollup": "^1.26.4",
     "rollup-plugin-node-resolve": "^5.2.0",
@@ -21,6 +23,7 @@
   "devDependencies": {
     "@vue/cli-plugin-babel": "^4.0.0",
     "@vue/cli-service": "^4.0.0",
+    "nodemon": "^1.19.4",
     "vue-template-compiler": "^2.6.10"
   }
 }

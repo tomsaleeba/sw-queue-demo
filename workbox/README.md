@@ -16,7 +16,8 @@
      be tried again. There doesn't seem to be a way to hook the deletes
      https://github.com/GoogleChrome/workbox/blob/55b7cbf743a4f542d0b1bfb7a102e063d50ca0cd/packages/workbox-background-sync/src/Queue.ts#L205.
      We could always break encapsulation and go into the IDB store and check
-     for expiry ourselves
+     for expiry ourselves. The code also mentions that we can do this approach:
+     https://github.com/GoogleChrome/workbox/blob/55b7cbf743a4f542d0b1bfb7a102e063d50ca0cd/packages/workbox-background-sync/src/Queue.ts#L110
   - can we backout of building the service worker with webpack and just use ESM
       import statement to get what we need? The trick is making those modules
       available. I think we'd need to define our own module as an entry point

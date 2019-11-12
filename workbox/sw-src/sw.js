@@ -2,7 +2,12 @@ import { Plugin as BackgroundSyncPlugin } from 'workbox-background-sync/Plugin.m
 import { Queue } from 'workbox-background-sync/Queue.mjs'
 import { registerRoute } from 'workbox-routing/registerRoute.mjs'
 import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
-import { endpointPrefix } from '../src/constants.mjs'
+import {
+  endpointPrefix,
+  obsFieldName,
+  obsFieldsFieldName,
+  photosFieldName,
+} from '../src/constants.mjs'
 import Dexie from 'dexie'
 
 console.log('SW Startup!')
@@ -15,7 +20,7 @@ db.version(1).stores({
 
 // FIXME it seems we can't use the one queue for both the plugin AND our own use. Should we have a separate queue for our retries? It would let us have separate logic for those if we needed.
 // We could have the queue we push everything to from the synth endpoint. It's easy to fire all that off. Then we have a queue for the obs endpoint so we can hook those responses and the photos and obsfields endpoints get their own vanilla queues.
-const queue = new Queue('obs-dependant-queue')
+const depsQueue = new Queue('obs-dependant-queue')
 
 registerRoute(
   `${endpointPrefix}/observations`,
@@ -26,15 +31,13 @@ registerRoute(
         async onSync() {
           let entry
           while ((entry = await this.shiftRequest())) {
+            let resp
             try {
-              const resp = await fetch(entry.request.clone())
+              resp = await fetch(entry.request.clone())
               console.log(
                 `Request for '${entry.request.url}' ` +
                   `has been replayed in queue '${this._name}'`,
               )
-              const obs = await resp.body()
-              await onObsPostSuccess(obs, null, null, this)
-              // FIXME send a msg to refresh to UI? need onObsPostSuccess to be properly await-able too
             } catch (err) {
               console.error(err)
               await this.unshiftRequest(entry)
@@ -47,6 +50,23 @@ registerRoute(
               // will fall
               throw new Error('queue-replay-failed', { name: this._name })
             }
+            let obsId = '(not sure)'
+            try {
+              if (!resp) {
+                // FIXME assuming req failed, should we halt or keep processing queue?
+                continue
+              }
+              const obs = await resp.body()
+              obsId = obs.id
+              await onObsPostSuccess(obs)
+              // FIXME send a msg to refresh to UI? Or wait until all are processed?
+            } catch (err) {
+              console.warn(
+                `Failed processing dependents of obsId=${obsId}. ` +
+                  `They *should* be retried`,
+                err,
+              )
+            }
           }
           // FIXME hook end of queue processing to notify clients to refresh
         },
@@ -56,31 +76,68 @@ registerRoute(
   'POST',
 )
 
-function onObsPostSuccess(obsResp, photos, obsFields, queue) {
+async function onObsPostSuccess(obsResp) {
+  // it would be nice to print a warning if there are still items in the queue.
+  // For this demo, things can get crazy when this is the case.
+  const obsUnqiueId = obsResp.uniqueId
   const obsId = obsResp.id
-  console.debug(`Running post-success block for obs ID=${obsId}`)
-  // TODO should we always pull photos and obsFields from storage?
-  // TODO should we always put reqs onto the queue?
-  const photosToProcess = photos || getPhotosFor(obsResp.uniqueId) || []
-  const obsFieldsToProcess =
-    obsFields || getObsFieldsFor(obsResp.uniqueId) || []
-  if (queue) {
-    // TODO unshift() reqs onto queue
+  console.debug(
+    `Running post-success block for obs unique ID=${obsUnqiueId}, ` +
+      `which has ID=${obsId}`,
+  )
+  const depsRecord = await db.deps.get(obsUnqiueId)
+  if (!depsRecord) {
+    console.warn(`No deps found for obsUnqiueId=${obsUnqiueId}`)
     return
   }
-  for (const curr of photosToProcess) {
+  for (const curr of depsRecord.photos) {
     const fd = new FormData()
     fd.append('obsId', obsId)
     fd.append('file', curr)
-    // FIXME should we await these or push onto queue?
-    fetch(endpointPrefix + '/photos', {
-      method: 'POST',
-      mode: 'cors',
-      body: fd,
+    console.debug('Pushing a photo to the queue')
+    await depsQueue.pushRequest({
+      request: new Request(endpointPrefix + '/photos', {
+        method: 'POST',
+        mode: 'cors',
+        body: fd,
+      }),
     })
-    // FIXME need to ensure these are retried if they fail
   }
-  // TODO process obsFields
+  for (const curr of depsRecord.obsFields) {
+    console.debug('Pushing an obsField to the queue')
+    await depsQueue.pushRequest({
+      request: new Request(endpointPrefix + '/obs-fields', {
+        method: 'POST',
+        mode: 'cors',
+        headers: {
+          'Content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          field: curr,
+          obsId,
+        }),
+      }),
+    })
+  }
+  // FIXME do we need to separately define workbox endpoints for the /photos
+  // and /obs-fields endpoints so they have retry, or is the retry that's built
+  // into this queue enough?
+  // FIXME are we doing the right thing by pushing out reqs and then waiting
+  // for the whole queue to process? Presumably this means we process one obs
+  // fully before the next can start, which is what we want.
+  try {
+    console.debug('Triggering deps queue replay')
+    // FIXME replayRequests() will only throw when "failed to fetch". It doesn't
+    // check the resp status code. We should probably roll our own replayer that
+    // *does* check the status code and at least log it. We need to figure out
+    // what to do with non 2xx resps
+    await depsQueue.replayRequests()
+  } catch (err) {
+    console.debug('caught error from replayRequests(), rethrowing...')
+    throw err
+  }
+  console.debug('Cleaning up after ourselves')
+  await db.deps.delete(obsUnqiueId)
 }
 
 const handler = async ({ url, event, params }) => {
@@ -90,11 +147,13 @@ const handler = async ({ url, event, params }) => {
   // TODO
   //   stash fields and photos (IndexedDB? Is this always available when SW is)
   //   make obs req, then the hook on the resp will take over
+  const photos = formData.getAll(photosFieldName)
+  const obsFields = formData.getAll(obsFieldsFieldName)
   await db.deps.put({
     uniqueId: obs.uniqueId,
-    // FIXME get the photos and obsfields
+    photos,
+    obsFields,
   })
-  // TODO should we always put the req onto the queue?
   fetch(endpointPrefix + '/observations', {
     method: 'POST',
     mode: 'cors',
@@ -111,27 +170,33 @@ const handler = async ({ url, event, params }) => {
       return Promise.reject(resp)
     })
     .then(obs => {
-      onObsPostSuccess(
-        obs,
-        formData.getAll('photos'),
-        formData.getAll('obsFields'),
-      )
-      // don't "return from fn" which would make this part of the promise
-      // chain, it will be retried separately
-      // FIXME should we send msg to refresh to UI? Need to also await onObsPostSuccess
+      onObsPostSuccess(obs)
+        .then(() => {
+          console.debug(
+            `Finished post-obs processing without error for obsId=${obs.id}`,
+          )
+          // FIXME should we send msg to refresh to UI?
+        })
+        .catch(err => {
+          console.warn(
+            `Failed processing dependents of obsId=${obs.id}. ` +
+              `They *should* be retried`,
+            err,
+          )
+        })
     })
     .catch(err => {
+      // TODO should this just be a warning as it will be retried?
       console.error(
-        'Failed to trigger photos and obsFields after obs success',
+        'Failed to POST obs. It should be retried automatically',
         err,
       )
-      // TODO store dependants so they can be found after the obs req is retried
     })
   return new Response(
     JSON.stringify({
       result: 'queued',
-      photoCount: formData.getAll('photos').length,
-      // TODO add obsField count
+      photoCount: photos.length,
+      obsFieldCount: obsFields.length,
     }),
   )
 }

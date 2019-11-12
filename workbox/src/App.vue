@@ -1,18 +1,20 @@
 <template>
   <div id="app">
-    <div>
+    <p>
       Service worker support = {{ swStatus }}
       <button @click="refreshSwStatus">Refresh</button>
+    </p>
+    <p>
       <button @click="killSw">Kill SW</button>
       (Note: reload the page to get the SW running again)
-    </div>
-    <div>
+    </p>
+    <p>
       <button @click="sendMessageToSw">Send msg to SW</button>
       (Note: look in the console)
-    </div>
-    <div>
+    </p>
+    <p>
       <button @click="doCreateObs">Create observation</button>
-    </div>
+    </p>
     <p>Status = {{ theStatus }}</p>
     <h1>Observations</h1>
     <div>
@@ -20,9 +22,9 @@
     </div>
     <ul class="obs-list">
       <li v-for="curr of obsList" :key="curr.id" class="obs-item">
-        <div>ID={{ curr.id }}</div>
-        <div>uniqueID={{ curr.uniqueId }}</div>
-        <div>{{ curr.photos.length }} photos</div>
+        ID={{ curr.id }}<br />
+        uniqueID={{ curr.uniqueId }}<br />
+        {{ curr.photos.length }} photos, {{ curr.obsFields.length }} obs fields
       </li>
       <li v-if="!obsList.length">(empty)</li>
     </ul>
@@ -30,7 +32,13 @@
 </template>
 
 <script>
-import { endpointPrefix } from './constants.mjs'
+import fetch from 'fetch-retry'
+import {
+  endpointPrefix,
+  obsFieldName,
+  obsFieldsFieldName,
+  photosFieldName,
+} from './constants.mjs'
 
 const someJpg = new Blob(Uint8Array.from([0xff, 0xd8, 0xff, 0xdb]), {
   type: 'image/jpeg',
@@ -49,7 +57,8 @@ export default {
     this.refreshSwStatus()
   },
   methods: {
-    sendMessageToSw(msg) {
+    sendMessageToSw() {
+      const msg = 'Hello from App.vue'
       return new Promise(function(resolve, reject) {
         const msgChan = new MessageChannel()
         msgChan.port1.onmessage = function(event) {
@@ -81,35 +90,61 @@ export default {
       const photo2 = {
         file: someJpg,
       }
+      const obsField1 = {
+        fieldId: 11,
+        value: 'yes',
+      }
+      const obsField2 = {
+        fieldId: 89,
+        value: 'sandy',
+      }
       const isNoSwSupport = !(
         'serviceWorker' in navigator && navigator.serviceWorker.controller
       )
       if (isNoSwSupport) {
         console.debug('No SW support, doing it all ourselves')
         try {
+          console.debug('POSTing observation')
           const resp = await this.doJsonPost('observations', obs)
           const obsId = (await resp.json()).id
-          const formData1 = new FormData()
-          formData1.append('file', photo1.file)
-          formData1.append('obsId', obsId)
-          await this.doFormPost('photos', formData1)
-          const formData2 = new FormData()
-          formData2.append('file', photo2.file)
-          formData2.append('obsId', obsId)
-          await this.doFormPost('photos', formData2)
+          console.debug('POSTing photo1')
+          await (() => {
+            const formData = new FormData()
+            formData.append('file', photo1.file)
+            formData.append('obsId', obsId)
+            return this.doFormPost('photos', formData)
+          })()
+          console.debug('POSTing photo2')
+          await (() => {
+            const formData = new FormData()
+            formData.append('file', photo2.file)
+            formData.append('obsId', obsId)
+            return this.doFormPost('photos', formData)
+          })()
+          console.debug('POSTing obsField1')
+          await this.doJsonPost('obs-fields', {
+            obsId,
+            field: obsField1,
+          })
+          console.debug('POSTing obsField2')
+          await this.doJsonPost('obs-fields', {
+            obsId,
+            field: obsField2,
+          })
           this.theStatus = 'finished'
         } catch (err) {
           console.error('Failed to POST obs record', err)
           this.theStatus = 'error'
         }
-        // FIXME need retry logic
         return
       }
       console.debug('We have SW support, POSTing bundle')
       const fd = new FormData()
-      fd.append('obs', JSON.stringify(obs))
-      fd.append('photos', photo1.file, 'photo1')
-      fd.append('photos', photo2.file, 'photo2')
+      fd.append(obsFieldName, JSON.stringify(obs))
+      fd.append(photosFieldName, photo1.file, 'photo1')
+      fd.append(photosFieldName, photo2.file, 'photo2')
+      fd.append(obsFieldsFieldName, JSON.stringify(obsField1))
+      fd.append(obsFieldsFieldName, JSON.stringify(obsField2))
       const resp = await fetch('http://local.service-worker/queue/obs-bundle', {
         method: 'POST',
         body: fd,
@@ -147,15 +182,23 @@ export default {
         throw err
       }
     },
-    doJsonPost(reqType, body) {
-      return this._doPost(reqType, JSON.stringify(body), {
+    async doJsonPost(reqType, body) {
+      const resp = await this._doPost(reqType, JSON.stringify(body), {
         headers: {
           'Content-Type': 'application/json',
         },
       })
+      if (!resp.ok) {
+        throw new Error(`Req for ${reqType} was not OK`)
+      }
+      return resp
     },
-    doFormPost(reqType, body) {
-      return this._doPost(reqType, body, {})
+    async doFormPost(reqType, body) {
+      const resp = await this._doPost(reqType, body, {})
+      if (!resp.ok) {
+        throw new Error(`Req for ${reqType} was not OK`)
+      }
+      return resp
     },
     refreshSwStatus() {
       console.debug('Checking SW support')
@@ -202,5 +245,7 @@ export default {
 .obs-item {
   font-family: monospace;
   margin-bottom: 1em;
+  white-space: pre;
+  text-align: left;
 }
 </style>
