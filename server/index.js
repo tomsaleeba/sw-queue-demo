@@ -7,7 +7,10 @@ const port = 3000
 
 app.use(cors())
 
-const allowSyntheticErrors = !process.env.DISABLE_SYNTH_ERRORS
+const chanceOfError = parseFloat(process.env.ERROR_CHANCE) || 0.3
+console.log(`Chance of synthetic errors (ERROR_CHANCE): ${chanceOfError}`)
+const fakeSleepMs = parseInt(process.env.FAKE_SLEEP_MS) || 195
+console.log(`FAKE_SLEEP_MS: ${fakeSleepMs}`)
 
 const dataStore = {}
 
@@ -30,7 +33,7 @@ app.post('/v1/photos', formidable(), (req, res) => {
     return res.status(404).json({ msg: 'No obs found for ID=' + obsId })
   }
   const isFirstPhoto = record.photos.length === 1
-  if (allowSyntheticErrors && isReturnSyntheticError()) {
+  if (isReturnSyntheticError()) {
     console.log(
       new Date().toLocaleString() + '  triggering a synthetic error on /photos',
     )
@@ -73,5 +76,5 @@ app.post('/v1/project_observations', bodyParser.json(), (req, res) => {
 app.listen(port, () => console.log(`Example app listening on port ${port}!`))
 
 function isReturnSyntheticError() {
-  return Math.random() > 0.7
+  return Math.random() < chanceOfError
 }

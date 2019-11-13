@@ -9,8 +9,8 @@
   },
   "dependencies": {
     "core-js": "^3.3.2",
-    "dexie": "^2.0.4",
     "fetch-retry": "^2.2.3",
+    "localforage": "^1.7.3",
     "magic-string": "^0.25.4",
     "rollup": "^1.26.4",
     "rollup-plugin-node-resolve": "^5.2.0",
@@ -24,6 +24,7 @@
     "@vue/cli-plugin-babel": "^4.0.0",
     "@vue/cli-service": "^4.0.0",
     "nodemon": "^1.19.4",
+    "rollup-plugin-commonjs": "^10.1.0",
     "vue-template-compiler": "^2.6.10"
   }
 }

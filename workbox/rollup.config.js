@@ -1,23 +1,26 @@
-import resolve from 'rollup-plugin-node-resolve'
+import nodeResolve from 'rollup-plugin-node-resolve'
+import commonjs from 'rollup-plugin-commonjs'
 import { terser } from 'rollup-plugin-terser'
-
-const plugins = [
-  resolve(), // lets us find dependencies in node_modules
-  buildGuira487Plugin(),
-]
-if (process.env.DO_MINIFY) {
-  console.log('Minification *will* be performed!')
-  plugins.push(terser())
-}
 
 export default {
   input: 'sw-src/sw.js',
-  output: {
-    file: 'dist/sw-dist.js',
-    format: 'iife',
-    sourcemap: true,
-  },
-  plugins,
+  output: [
+    {
+      file: 'dist/sw-dist.js',
+      format: 'iife',
+    },
+    {
+      file: 'dist/sw-dist.min.js',
+      format: 'iife',
+      sourcemap: true,
+      plugins: [terser()], // FIXME isn't doing its thing :(
+    },
+  ],
+  plugins: [
+    nodeResolve(), // lets us find dependencies in node_modules
+    commonjs(),
+    buildGuira487Plugin(),
+  ],
 }
 
 // Removes process.env.* references that explode browsers

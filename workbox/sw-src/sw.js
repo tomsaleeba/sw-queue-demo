@@ -2,6 +2,7 @@ import { Plugin as BackgroundSyncPlugin } from 'workbox-background-sync/Plugin.m
 import { Queue } from 'workbox-background-sync/Queue.mjs'
 import { registerRoute } from 'workbox-routing/registerRoute.mjs'
 import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
+import localForage from 'localforage' // could use idb-keyval instead if we trust all indexeddb implementations will work properly
 import {
   endpointPrefix,
   obsFieldName,
@@ -12,15 +13,8 @@ import {
   syncObsQueueMsg,
   triggerQueueProcessingMsg,
 } from '../src/constants.mjs'
-import Dexie from 'dexie'
 
 console.log('SW Startup!')
-
-const db = new Dexie('WowSwDb')
-
-db.version(1).stores({
-  deps: `uniqueId`, // requests dependent on an obs resp
-})
 
 const depsQueue = new Queue('obs-dependant-queue', {
   maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
@@ -30,7 +24,6 @@ const depsQueue = new Queue('obs-dependant-queue', {
       const isProjectLinkingResp = resp.url.endsWith('/project_observations')
       // FIXME should we also check resp.ok?
       if (!isProjectLinkingResp) {
-        console.debug('resp is NOT a project linkage one')
         return
       }
       console.debug('resp IS a project linkage one')
@@ -90,6 +83,8 @@ async function onSyncWithPerItemCallback(cb) {
       // will fall. Will probably need a separate callback for that
       // FIXME throwing this error doesn't seem to be caught and results in
       // the uncaught in promise that we're seeing. Is there another option?
+      // Perhaps we should log the error here, then return. The queue can then
+      // try again on the next sync
       throw new Error('queue-replay-failed', { name: this._name })
     }
     try {
@@ -110,7 +105,11 @@ async function onObsPostSuccess(obsResp) {
     `Running post-success block for obs unique ID=${obsUnqiueId}, ` +
       `which has ID=${obsId}`,
   )
-  const depsRecord = await db.deps.get(obsUnqiueId)
+  // We're using localForage in the hope that webkit won't silently eat our
+  // blobs. If it does, you need to reserialise them to ArrayBuffers to avoid
+  // heartache.
+  // https://developers.google.com/web/fundamentals/instant-and-offline/web-storage/indexeddb-best-practices#not_everything_can_be_stored_in_indexeddb_on_all_platforms
+  const depsRecord = await localForage.getItem(obsUnqiueId)
   if (!depsRecord) {
     console.warn(`No deps found for obsUnqiueId=${obsUnqiueId}`)
     return
@@ -159,6 +158,10 @@ async function onObsPostSuccess(obsResp) {
         }),
       }),
     })
+    // if (!depsQueue._syncInProgress) {
+    //   console.debug('depsQueue is not currently processing, giving it a kick')
+    //   depsQueue._onSync() // FIXME do we need to catch errors here?
+    // }
   } catch (err) {
     // Note: error related to queue processing, which if we're connected to the
     // network will be triggered by pushing items, won't be caught here.
@@ -173,20 +176,17 @@ async function onObsPostSuccess(obsResp) {
     'Cleaning up after ourselves. All requests have been generated so' +
       ' we do not need this data anymore',
   )
-  await db.deps.delete(obsUnqiueId)
+  await localForage.removeItem(obsUnqiueId)
 }
 
 const handler = async ({ url, event, params }) => {
   console.debug('Service worker processing POSTed bundle')
   const formData = await event.request.formData()
   const obs = JSON.parse(formData.get('obs'))
-  // TODO
-  //   stash fields and photos (IndexedDB? Is this always available when SW is)
-  //   make obs req, then the hook on the resp will take over
   const photos = formData.getAll(photosFieldName)
   const obsFields = formData.getAll(obsFieldsFieldName)
   const projectId = formData.get(projectIdFieldName)
-  await db.deps.put({
+  await localForage.setItem(obs.uniqueId, {
     uniqueId: obs.uniqueId,
     photos,
     obsFields,
@@ -206,6 +206,14 @@ const handler = async ({ url, event, params }) => {
         body: JSON.stringify(obs),
       }),
     })
+    // TODO the real sync doesn't seem to check before running so you can get
+    // two threads of processing running at once, messy. If the queue has seen
+    // an error, it won't start processing when we push a new request so that's
+    // when this would be good.
+    // if (!obsQueue._syncInProgress) {
+    //   console.debug('obsQueue is not currently processing, giving it a kick')
+    //   obsQueue._onSync() // FIXME do we need to catch errors here?
+    // }
   } catch (err) {
     // FIXME not sure what to do here? We should probably re-throw so the
     // client knows we failed. Is it important for the client to distinguish
@@ -237,25 +245,24 @@ self.addEventListener('activate', function(event) {
 self.addEventListener('message', function(event) {
   switch (event.data) {
     case triggerQueueProcessingMsg:
+      if (depsQueue._syncInProgress) {
+        // FIXME doesn't seem to work. The flag doesn't seem reliable
+        console.log('depsQueue already seems to be doing a sync')
+        return
+      }
       console.log('triggering deps queue processing at request of client')
       depsQueue._onSync()
       // FIXME do we need to catch errors?
       return
     case syncObsQueueMsg:
-      // FIXME we aren't meant to be using SyncEvent because it's not a
-      // standard: https://developer.mozilla.org/en-US/docs/Web/API/SyncEvent.
-      // Code taken from https://github.com/GoogleChrome/workbox/blob/5e04a622d9c1843a6231e1f835db58ac593f0c1f/test/workbox-google-analytics/static/basic-example/sw.js#L63
-      // Override `.waitUntil` so we can signal when the sync is done.
-      const originalSyncEventWaitUntil = SyncEvent.prototype.waitUntil
-      SyncEvent.prototype.waitUntil = promise => {
-        return promise.then(() => event.ports[0].postMessage(null))
+      if (obsQueue._syncInProgress) {
+        // FIXME doesn't seem to work. The flag doesn't seem reliable
+        console.log('obsQueue already seems to be doing a sync')
+        return
       }
-      self.dispatchEvent(
-        new SyncEvent('sync', {
-          tag: 'workbox-background-sync:obs-queue',
-        }),
-      )
-      SyncEvent.prototype.waitUntil = originalSyncEventWaitUntil
+      console.log('triggering obs queue processing at request of client')
+      obsQueue._onSync()
+      // FIXME do we need to catch errors?
       return
     default:
       console.log('SW received message: ' + event.data)
