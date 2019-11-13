@@ -20,7 +20,7 @@ app.post('/v1/observations', bodyParser.json(), (req, res) => {
   dataStore[id] = { id, photos: [], obsFields: [], ...req.body }
   setTimeout(() => {
     res.json(dataStore[id])
-  }, 1500)
+  }, 195)
 })
 
 app.post('/v1/photos', formidable(), (req, res) => {
@@ -41,7 +41,7 @@ app.post('/v1/photos', formidable(), (req, res) => {
   dataStore[obsId] = record
   setTimeout(() => {
     res.json(record)
-  }, 1500)
+  }, 195)
 })
 
 app.post('/v1/obs-fields', bodyParser.json(), (req, res) => {
@@ -54,7 +54,20 @@ app.post('/v1/obs-fields', bodyParser.json(), (req, res) => {
   dataStore[obsId] = record
   setTimeout(() => {
     res.json(record)
-  }, 1500)
+  }, 195)
+})
+
+app.post('/v1/project_observations', bodyParser.json(), (req, res) => {
+  const obsId = req.body.obsId
+  const record = dataStore[obsId]
+  if (!record) {
+    return res.status(404).json({ msg: 'No obs found for ID=' + obsId })
+  }
+  record.project = req.body.projectId
+  dataStore[obsId] = record
+  setTimeout(() => {
+    res.json(record)
+  }, 195)
 })
 
 app.listen(port, () => console.log(`Example app listening on port ${port}!`))

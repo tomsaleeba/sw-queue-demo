@@ -1,5 +1,34 @@
 <template>
   <div id="app">
+    <div>
+      <h1>Test cases</h1>
+      <ul class="test-case-list">
+        <li>No service worker, all reqs succeed on first try = success</li>
+        <li>
+          No service worker, one or more req fail but succeed on the retry =
+          success
+        </li>
+        <li>
+          No service worker, one or more req fail and continue to fail despite
+          retries = incomplete upload, should either rollback or wait for
+          network to retry (with our code) failures
+        </li>
+        <li>Service worker, all reqs suceed on first try = success</li>
+        <li>
+          Service worker, fail to queue obs from bundle = failure, should have
+          client fallback to no-sw approach
+        </li>
+        <li>
+          Service worker, one or more req (obs or deps) fail to fetch = success,
+          failure will be retried until they succeed
+        </li>
+        <li>
+          Service worker, one or more req (obs or deps) continue fail to fetch
+          until they expire on the queue = failure, should have something that
+          catches this expiry
+        </li>
+      </ul>
+    </div>
     <p>
       Service worker support = {{ swStatus }}
       <button @click="refreshSwStatus">Refresh</button>
@@ -11,6 +40,11 @@
     <p>
       <button @click="sendHelloMessageToSw">Send msg to SW</button>
       (Note: look in the console)
+    </p>
+    <p>
+      <button @click="triggerObsQueue">Trigger obs queue processing</button>
+      (Note: be careful, I think you can cause a race condition by processing
+      the queue multiple times concurrently)
     </p>
     <p>
       <button @click="triggerDepsQueue">Trigger deps queue processing</button>
@@ -29,7 +63,9 @@
       <li v-for="curr of obsList" :key="curr.id" class="obs-item">
         ID={{ curr.id }}<br />
         uniqueID={{ curr.uniqueId }}<br />
-        {{ curr.photos.length }} photos, {{ curr.obsFields.length }} obs fields
+        {{ curr.photos.length }} photos, {{ curr.obsFields.length }} obs
+        fields<br />
+        Project ID={{ curr.project }}
       </li>
       <li v-if="!obsList.length">(empty)</li>
     </ul>
@@ -43,6 +79,9 @@ import {
   obsFieldName,
   obsFieldsFieldName,
   photosFieldName,
+  projectIdFieldName,
+  refreshObsMsg,
+  syncObsQueueMsg,
   triggerQueueProcessingMsg,
 } from './constants.mjs'
 
@@ -61,8 +100,24 @@ export default {
   },
   mounted() {
     this.refreshSwStatus()
+    this.registerForSwMessages()
   },
   methods: {
+    registerForSwMessages() {
+      if (!('serviceWorker' in navigator)) {
+        console.warn('no service worker, cannot register for messages')
+        return
+      }
+      navigator.serviceWorker.addEventListener('message', event => {
+        switch (event.data) {
+          case refreshObsMsg:
+            this.refreshObs()
+            break
+          default:
+            console.log('Client received message from SW: ' + event.data)
+        }
+      })
+    },
     sendHelloMessageToSw() {
       this._sendMessageToSw('Client 1 says "Hello from App.vue"')
     },
@@ -70,7 +125,7 @@ export default {
       return new Promise(function(resolve, reject) {
         const msgChan = new MessageChannel()
         msgChan.port1.onmessage = function(event) {
-          if (event.data.error) {
+          if ((event.data || {}).error) {
             return reject(event.data.error)
           }
           return resolve(event.data)
@@ -139,7 +194,13 @@ export default {
             obsId,
             field: obsField2,
           })
+          console.debug('POSTing project linkage')
+          await this.doJsonPost('project_observations', {
+            obsId,
+            projectId: 123,
+          })
           this.theStatus = 'finished'
+          this.refreshObs()
         } catch (err) {
           console.error('Failed to POST obs record', err)
           this.theStatus = 'error'
@@ -153,6 +214,7 @@ export default {
       fd.append(photosFieldName, photo2.file, 'photo2')
       fd.append(obsFieldsFieldName, JSON.stringify(obsField1))
       fd.append(obsFieldsFieldName, JSON.stringify(obsField2))
+      fd.append(projectIdFieldName, JSON.stringify(1234))
       const resp = await fetch('http://local.service-worker/queue/obs-bundle', {
         method: 'POST',
         body: fd,
@@ -233,6 +295,11 @@ export default {
     triggerDepsQueue() {
       this._sendMessageToSw(triggerQueueProcessingMsg)
     },
+    triggerObsQueue() {
+      this._sendMessageToSw(syncObsQueueMsg).then(() => {
+        console.debug('obs-sync trigger is complete')
+      })
+    },
   },
 }
 </script>
@@ -257,6 +324,10 @@ export default {
   font-family: monospace;
   margin-bottom: 1em;
   white-space: pre;
+  text-align: left;
+}
+
+.test-case-list {
   text-align: left;
 }
 </style>

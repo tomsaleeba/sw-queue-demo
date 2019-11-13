@@ -7,6 +7,9 @@ import {
   obsFieldName,
   obsFieldsFieldName,
   photosFieldName,
+  projectIdFieldName,
+  refreshObsMsg,
+  syncObsQueueMsg,
   triggerQueueProcessingMsg,
 } from '../src/constants.mjs'
 import Dexie from 'dexie'
@@ -19,63 +22,84 @@ db.version(1).stores({
   deps: `uniqueId`, // requests dependent on an obs resp
 })
 
-// FIXME it seems we can't use the one queue for both the plugin AND our own use. Should we have a separate queue for our retries? It would let us have separate logic for those if we needed.
-// We could have the queue we push everything to from the synth endpoint. It's easy to fire all that off. Then we have a queue for the obs endpoint so we can hook those responses and the photos and obsfields endpoints get their own vanilla queues.
-const depsQueue = new Queue('obs-dependant-queue')
+const depsQueue = new Queue('obs-dependant-queue', {
+  maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
+  async onSync() {
+    const boundFn = onSyncWithPerItemCallback.bind(this)
+    await boundFn(async resp => {
+      const isProjectLinkingResp = resp.url.endsWith('/project_observations')
+      // FIXME should we also check resp.ok?
+      if (!isProjectLinkingResp) {
+        console.debug('resp is NOT a project linkage one')
+        return
+      }
+      console.debug('resp IS a project linkage one')
+      sendMessageToAllClients(refreshObsMsg)
+    })
+  },
+})
 
-registerRoute(
-  `${endpointPrefix}/observations`,
-  new NetworkOnly({
-    plugins: [
-      new BackgroundSyncPlugin('obs-queue', {
-        maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
-        async onSync() {
-          let entry
-          while ((entry = await this.shiftRequest())) {
-            let resp
-            try {
-              resp = await fetch(entry.request.clone())
-              console.log(
-                `Request for '${entry.request.url}' ` +
-                  `has been replayed in queue '${this._name}'`,
-              )
-            } catch (err) {
-              console.error(err)
-              await this.unshiftRequest(entry)
-              console.log(
-                `Request for '${entry.request.url}' ` +
-                  `failed to replay, putting it back in queue '${this._name}'`,
-              )
-              // FIXME if a 4xx response, we need to do something more. Can we
-              // rollback the whole obs? We only need to DELETE the obs and the rest
-              // will fall
-              throw new Error('queue-replay-failed', { name: this._name })
-            }
-            let obsId = '(not sure)'
-            try {
-              if (!resp) {
-                // FIXME assuming req failed, should we halt or keep processing queue?
-                continue
-              }
-              const obs = await resp.body()
-              obsId = obs.id
-              await onObsPostSuccess(obs)
-              // FIXME send a msg to refresh to UI? Or wait until all are processed?
-            } catch (err) {
-              console.warn(
-                `Failed processing dependents of obsId=${obsId}. ` +
-                  `They *should* be retried`,
-                err,
-              )
-            }
-          }
-          // FIXME hook end of queue processing to notify clients to refresh
-        },
-      }),
-    ],
-  }),
-  'POST',
-)
+// We don't need to register a route for /observations, etc because:
+//  1. if we have a SW, we're using the synthetic bundle endpoint
+//  2. fetch calls made *from* the SW don't hit the routes we configure
+const obsQueue = new Queue('obs-queue', {
+  maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
+  async onSync() {
+    const boundFn = onSyncWithPerItemCallback.bind(this)
+    await boundFn(async resp => {
+      let obsId = '(not sure)'
+      try {
+        const obs = await resp.json()
+        obsId = obs.id
+        await onObsPostSuccess(obs)
+      } catch (err) {
+        // FIXME an error that happens while trying to call onObsPostSuccess
+        // (ie. this try block) will mean that we never queue up the deps for a
+        // successful obs. Might need extra logic to scan obs on the remote and
+        // check for pending deps, then trigger the queuing?
+        console.warn(
+          `Failed processing dependents of obsId=${obsId}. ` +
+            `They *should* be retried`,
+          err,
+        )
+        throw err
+      }
+    })
+  },
+})
+
+async function onSyncWithPerItemCallback(cb) {
+  let entry
+  while ((entry = await this.shiftRequest())) {
+    let resp
+    try {
+      resp = await fetch(entry.request.clone())
+      console.log(
+        `Request for '${entry.request.url}' ` +
+          `has been replayed in queue '${this._name}'`,
+      )
+    } catch (err) {
+      console.error(err)
+      await this.unshiftRequest(entry)
+      console.log(
+        `Request for '${entry.request.url}' ` +
+          `failed to replay, putting it back in queue '${this._name}'`,
+      )
+      // FIXME if a 4xx response, we need to do something more. Can we
+      // rollback the whole obs? We only need to DELETE the obs and the rest
+      // will fall. Will probably need a separate callback for that
+      // FIXME throwing this error doesn't seem to be caught and results in
+      // the uncaught in promise that we're seeing. Is there another option?
+      throw new Error('queue-replay-failed', { name: this._name })
+    }
+    try {
+      await cb(resp)
+    } catch (err) {
+      console.error('Failed during callback for a queue item, re-throwing...')
+      throw err
+    }
+  }
+}
 
 async function onObsPostSuccess(obsResp) {
   // it would be nice to print a warning if there are still items in the queue.
@@ -121,6 +145,20 @@ async function onObsPostSuccess(obsResp) {
         }),
       })
     }
+    console.debug('Pushing project linkage call to the queue')
+    await depsQueue.pushRequest({
+      request: new Request(endpointPrefix + '/project_observations', {
+        method: 'POST',
+        mode: 'cors',
+        headers: {
+          'Content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          obsId,
+          projectId: depsRecord.projectId,
+        }),
+      }),
+    })
   } catch (err) {
     // Note: error related to queue processing, which if we're connected to the
     // network will be triggered by pushing items, won't be caught here.
@@ -147,54 +185,39 @@ const handler = async ({ url, event, params }) => {
   //   make obs req, then the hook on the resp will take over
   const photos = formData.getAll(photosFieldName)
   const obsFields = formData.getAll(obsFieldsFieldName)
+  const projectId = formData.get(projectIdFieldName)
   await db.deps.put({
     uniqueId: obs.uniqueId,
     photos,
     obsFields,
+    projectId,
   })
-  fetch(endpointPrefix + '/observations', {
-    method: 'POST',
-    mode: 'cors',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(obs),
-  })
-    .then(resp => {
-      if (resp.ok) {
-        return resp.json()
-      }
-      // TODO should we craft an error-ish object to pass?
-      return Promise.reject(resp)
+  try {
+    // FIXME seeing "Uncaught (in promise) Error: queue-replay-failed" when the
+    // queue processing gets "Failed to fetch". This it's Dexie getting in the
+    // way (see Readme TODOs). We don't want to see uncaught rejections!
+    await obsQueue.pushRequest({
+      request: new Request(endpointPrefix + '/observations', {
+        method: 'POST',
+        mode: 'cors',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(obs),
+      }),
     })
-    .then(obs => {
-      onObsPostSuccess(obs)
-        .then(() => {
-          console.debug(
-            `Finished post-obs processing without error for obsId=${obs.id}`,
-          )
-          // FIXME should we send msg to refresh to UI?
-        })
-        .catch(err => {
-          console.warn(
-            `Failed processing dependents of obsId=${obs.id}. ` +
-              `They *should* be retried`,
-            err,
-          )
-        })
-    })
-    .catch(err => {
-      // TODO should this just be a warning as it will be retried?
-      console.error(
-        'Failed to POST obs. It should be retried automatically',
-        err,
-      )
-    })
+  } catch (err) {
+    // FIXME not sure what to do here? We should probably re-throw so the
+    // client knows we failed. Is it important for the client to distinguish
+    // between "no SW" and "there is a SW but it failed"?
+    console.error('Failed to push obs req onto queue', err)
+  }
   return new Response(
     JSON.stringify({
       result: 'queued',
       photoCount: photos.length,
       obsFieldCount: obsFields.length,
+      projectId,
     }),
   )
 }
@@ -212,14 +235,33 @@ self.addEventListener('activate', function(event) {
 })
 
 self.addEventListener('message', function(event) {
-  if (event.data === triggerQueueProcessingMsg) {
-    console.log('triggering deps queue processing at request of client')
-    depsQueue.replayRequests()
-    // FIXME do we need to catch errors?
-    return
+  switch (event.data) {
+    case triggerQueueProcessingMsg:
+      console.log('triggering deps queue processing at request of client')
+      depsQueue._onSync()
+      // FIXME do we need to catch errors?
+      return
+    case syncObsQueueMsg:
+      // FIXME we aren't meant to be using SyncEvent because it's not a
+      // standard: https://developer.mozilla.org/en-US/docs/Web/API/SyncEvent.
+      // Code taken from https://github.com/GoogleChrome/workbox/blob/5e04a622d9c1843a6231e1f835db58ac593f0c1f/test/workbox-google-analytics/static/basic-example/sw.js#L63
+      // Override `.waitUntil` so we can signal when the sync is done.
+      const originalSyncEventWaitUntil = SyncEvent.prototype.waitUntil
+      SyncEvent.prototype.waitUntil = promise => {
+        return promise.then(() => event.ports[0].postMessage(null))
+      }
+      self.dispatchEvent(
+        new SyncEvent('sync', {
+          tag: 'workbox-background-sync:obs-queue',
+        }),
+      )
+      SyncEvent.prototype.waitUntil = originalSyncEventWaitUntil
+      return
+    default:
+      console.log('SW received message: ' + event.data)
+      event.ports[0].postMessage('SW says "Hello back!"')
+      return
   }
-  console.log('SW received message: ' + event.data)
-  event.ports[0].postMessage('SW says "Hello back!"')
 })
 
 function sendMessageToClient(client, msg) {
@@ -231,7 +273,7 @@ function sendMessageToClient(client, msg) {
       }
       return resolve(event.data)
     }
-    client.postMessage('SW says: "' + msg + '"', [msgChan.port2])
+    client.postMessage(msg, [msgChan.port2])
   })
 }
 

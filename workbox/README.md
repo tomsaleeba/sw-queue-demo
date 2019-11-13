@@ -32,6 +32,11 @@
   - what happens if we queue up a few obs as fast as the UI will let us? Do
       things get jumbled, do we just process one obs fully, then the next? What
       if something goes wrong, where do we stop?
+  - I think dexie is interfering with workbox because we see `Uncaught (in
+      promise) Error: queue-replay-failed` thrown from dexie.es.js:onSync() and
+      further up the call stack we see DBWrapper, which is private in workbox.
+      No way workbox is wanting to use dexie. Dexie must be reassigning native
+      handlers and then workbox triggers them. Perhaps try switching to IDB?
 
 # Assumption:
   - service worker is a newer API than IndexedDB so anywhere we have a SW, we'll

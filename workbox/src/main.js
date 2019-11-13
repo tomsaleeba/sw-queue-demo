@@ -17,9 +17,4 @@ if ('serviceWorker' in navigator) {
     .catch(function(err) {
       console.error('SW registration failed with error ' + err)
     })
-
-  navigator.serviceWorker.addEventListener('message', function(event) {
-    console.log('Client received message: ' + event.data)
-    event.ports[0].postMessage('Client says "hello back!"')
-  })
 }
