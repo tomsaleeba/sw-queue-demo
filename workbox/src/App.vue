@@ -55,20 +55,33 @@
       <button @click="doCreateObs">Create observation</button>
     </p>
     <p>Status = {{ theStatus }}</p>
-    <h1>Observations</h1>
+    <h1>Observations ({{ obsList.length }})</h1>
     <div>
       <button @click="refreshObs">Refresh list</button>
     </div>
-    <ul class="obs-list">
-      <li v-for="curr of obsList" :key="curr.id" class="obs-item">
-        ID={{ curr.id }}<br />
-        uniqueID={{ curr.uniqueId }}<br />
-        {{ curr.photos.length }} photos, {{ curr.obsFields.length }} obs
-        fields<br />
-        Project ID={{ curr.project }}
-      </li>
-      <li v-if="!obsList.length">(empty)</li>
-    </ul>
+    <table class="obs-list">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>uniqueID</th>
+          <th># photos</th>
+          <th># obsFields</th>
+          <th>Project ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="curr of obsList" :key="curr.id" class="obs-item">
+          <td>{{ curr.id }}</td>
+          <td>{{ curr.uniqueId }}</td>
+          <td>{{ curr.photos.length }}</td>
+          <td>{{ curr.obsFields.length }}</td>
+          <td>{{ curr.project }}</td>
+        </tr>
+        <tr v-if="!obsList.length">
+          <td>(empty)</td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </template>
 
@@ -81,8 +94,8 @@ import {
   photosFieldName,
   projectIdFieldName,
   refreshObsMsg,
+  syncDepsQueueMsg,
   syncObsQueueMsg,
-  triggerQueueProcessingMsg,
 } from './constants.mjs'
 
 const someJpg = new Blob(Uint8Array.from([0xff, 0xd8, 0xff, 0xdb]), {
@@ -293,7 +306,7 @@ export default {
       }
     },
     triggerDepsQueue() {
-      this._sendMessageToSw(triggerQueueProcessingMsg)
+      this._sendMessageToSw(syncDepsQueueMsg)
     },
     triggerObsQueue() {
       this._sendMessageToSw(syncObsQueueMsg).then(() => {
@@ -316,7 +329,8 @@ export default {
 
 .obs-list {
   list-style: none;
-  max-width: 10em;
+  width: 100%;
+  max-width: 960px;
   margin: 0 auto;
 }
 
@@ -324,7 +338,7 @@ export default {
   font-family: monospace;
   margin-bottom: 1em;
   white-space: pre;
-  text-align: left;
+  text-align: center;
 }
 
 .test-case-list {

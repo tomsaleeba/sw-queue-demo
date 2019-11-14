@@ -11,7 +11,7 @@ import {
   projectIdFieldName,
   refreshObsMsg,
   syncObsQueueMsg,
-  triggerQueueProcessingMsg,
+  syncDepsQueueMsg,
 } from '../src/constants.mjs'
 
 console.log('SW Startup!')
@@ -20,15 +20,22 @@ const depsQueue = new Queue('obs-dependant-queue', {
   maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
   async onSync() {
     const boundFn = onSyncWithPerItemCallback.bind(this)
-    await boundFn(async resp => {
-      const isProjectLinkingResp = resp.url.endsWith('/project_observations')
-      // FIXME should we also check resp.ok?
-      if (!isProjectLinkingResp) {
-        return
-      }
-      console.debug('resp IS a project linkage one')
-      sendMessageToAllClients(refreshObsMsg)
-    })
+    await boundFn(
+      async resp => {
+        const isProjectLinkingResp = resp.url.endsWith('/project_observations')
+        // FIXME should we also check resp.ok?
+        if (!isProjectLinkingResp) {
+          return
+        }
+        console.debug('resp IS a project linkage one')
+        sendMessageToAllClients(refreshObsMsg)
+      },
+      async resp => {
+        // FIXME implement client error cb
+        throw new Error('FIXME implement me')
+        // do we need to rollback the obs?
+      },
+    )
   },
 })
 
@@ -39,29 +46,39 @@ const obsQueue = new Queue('obs-queue', {
   maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
   async onSync() {
     const boundFn = onSyncWithPerItemCallback.bind(this)
-    await boundFn(async resp => {
-      let obsId = '(not sure)'
-      try {
-        const obs = await resp.json()
-        obsId = obs.id
-        await onObsPostSuccess(obs)
-      } catch (err) {
-        // FIXME an error that happens while trying to call onObsPostSuccess
-        // (ie. this try block) will mean that we never queue up the deps for a
-        // successful obs. Might need extra logic to scan obs on the remote and
-        // check for pending deps, then trigger the queuing?
-        console.warn(
-          `Failed processing dependents of obsId=${obsId}. ` +
-            `They *should* be retried`,
-          err,
-        )
-        throw err
-      }
-    })
+    await boundFn(
+      async resp => {
+        let obsId = '(not sure)'
+        try {
+          const obs = await resp.json()
+          obsId = obs.id
+          await onObsPostSuccess(obs)
+        } catch (err) {
+          // an error happened while *queuing*. Errors from processing the queue
+          // will not be caught here!
+          // FIXME an error that happens while trying to call onObsPostSuccess
+          // (ie. this try block) will mean that we never queue up the deps for a
+          // successful obs. Might need extra logic to scan obs on the remote and
+          // check for pending deps, then trigger the queuing?
+          console.warn(
+            `Failed to queue dependents of obsId=${obsId}. This is bad.` +
+              ` We do not know which, if any, deps were queued. Retrying probably` +
+              ` won't help either as the error is not network related.`,
+            err,
+          )
+          throw err
+        }
+      },
+      async resp => {
+        // FIXME implement client error cb
+        throw new Error('FIXME implement me')
+        // maybe notify client page that this failed?
+      },
+    )
   },
 })
 
-async function onSyncWithPerItemCallback(cb) {
+async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
   let entry
   while ((entry = await this.shiftRequest())) {
     let resp
@@ -71,26 +88,58 @@ async function onSyncWithPerItemCallback(cb) {
         `Request for '${entry.request.url}' ` +
           `has been replayed in queue '${this._name}'`,
       )
+      const statusCode = resp.status
+      const is4xxStatusCode = statusCode >= 400 && statusCode < 500
+      if (is4xxStatusCode) {
+        console.log(
+          `Response (status=${statusCode}) for '${resp.url}'` +
+            ` indicates client error. Calling cleanup callback, then ` +
+            `continuing processing the queue`,
+        )
+        await clientErrorCb(resp)
+        continue // other queued reqs may succeed
+      }
+      const isServerError = statusCode >= 500 && statusCode < 600
+      if (isServerError) {
+        console.log(
+          `Response (status=${statusCode}) for '${resp.url}'` +
+            ` indicates server error for '${entry.request.url}'. ` +
+            `Putting request back in queue '${this._name}'; will retry later.`,
+          err,
+        )
+        await this.unshiftRequest(entry)
+        // FIXME probably need to throw here to stop an immediate retry
+        return // other queued reqs probably won't succeed (right now), wait for next sync
+      }
     } catch (err) {
-      console.error(err)
+      // "Failed to fetch" lands us here. It could be a network error or a
+      // non-CORS response.
       await this.unshiftRequest(entry)
       console.log(
         `Request for '${entry.request.url}' ` +
-          `failed to replay, putting it back in queue '${this._name}'`,
+          `failed to replay, putting it back in queue '${this._name}'. Error was:`,
+        err,
       )
-      // FIXME if a 4xx response, we need to do something more. Can we
-      // rollback the whole obs? We only need to DELETE the obs and the rest
-      // will fall. Will probably need a separate callback for that
-      // FIXME throwing this error doesn't seem to be caught and results in
-      // the uncaught in promise that we're seeing. Is there another option?
-      // Perhaps we should log the error here, then return. The queue can then
-      // try again on the next sync
-      throw new Error('queue-replay-failed', { name: this._name })
+      // Note: we *need* to throw here to stop an immediate retry on sync.
+      // Workbox does this for good reason: it needs to process items that were
+      // added to the queue during the sync. It's a bit messy because the error
+      // ends up as an "Uncaught (in promise)" but that's due to
+      // https://github.com/GoogleChrome/workbox/blob/v4.3.1/packages/workbox-background-sync/Queue.mjs#L331.
+      // Maybe should that just be a console.error/warn?
+      throw (() => {
+        const result = new Error(
+          `Failed to replay queue '${this._name}', due to: ` + err.message,
+        )
+        result.name = 'QueueReplayError'
+        return result
+      })()
     }
     try {
-      await cb(resp)
+      await successCb(resp)
     } catch (err) {
       console.error('Failed during callback for a queue item, re-throwing...')
+      // FIXME probably shouldn't throw here. Not sure what to do. Certainly
+      // log the error and perhaps continue processing the queue
       throw err
     }
   }
@@ -111,6 +160,7 @@ async function onObsPostSuccess(obsResp) {
   // https://developers.google.com/web/fundamentals/instant-and-offline/web-storage/indexeddb-best-practices#not_everything_can_be_stored_in_indexeddb_on_all_platforms
   const depsRecord = await localForage.getItem(obsUnqiueId)
   if (!depsRecord) {
+    // FIXME this is probably an error. We *always* have deps!
     console.warn(`No deps found for obsUnqiueId=${obsUnqiueId}`)
     return
   }
@@ -168,13 +218,9 @@ async function onObsPostSuccess(obsResp) {
     console.debug('caught error while populating queue, rethrowing...')
     throw err
   }
-  // FIXME we currently have no way to know if the requests succeed but aren't
-  // ok (503, 400, etc). To achieve this, we need to roll our own replayer and
-  // use that on our deps queue. Maybe it's ok without this, as we don't expect
-  // non-200 responses. But they might happen and we need to know!
   console.debug(
-    'Cleaning up after ourselves. All requests have been generated so' +
-      ' we do not need this data anymore',
+    'Cleaning up after ourselves. All requests have been generated' +
+      ' and queued up so we do not need this data anymore',
   )
   await localForage.removeItem(obsUnqiueId)
 }
@@ -244,15 +290,16 @@ self.addEventListener('activate', function(event) {
 
 self.addEventListener('message', function(event) {
   switch (event.data) {
-    case triggerQueueProcessingMsg:
+    case syncDepsQueueMsg:
       if (depsQueue._syncInProgress) {
         // FIXME doesn't seem to work. The flag doesn't seem reliable
         console.log('depsQueue already seems to be doing a sync')
         return
       }
       console.log('triggering deps queue processing at request of client')
-      depsQueue._onSync()
-      // FIXME do we need to catch errors?
+      depsQueue._onSync().catch(err => {
+        console.warn('Manually triggered depsQueue sync has failed', err)
+      })
       return
     case syncObsQueueMsg:
       if (obsQueue._syncInProgress) {
@@ -261,8 +308,9 @@ self.addEventListener('message', function(event) {
         return
       }
       console.log('triggering obs queue processing at request of client')
-      obsQueue._onSync()
-      // FIXME do we need to catch errors?
+      obsQueue._onSync().catch(err => {
+        console.warn('Manually triggered obsQueue sync has failed', err)
+      })
       return
     default:
       console.log('SW received message: ' + event.data)
