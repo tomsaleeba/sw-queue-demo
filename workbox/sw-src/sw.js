@@ -101,15 +101,15 @@ async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
       }
       const isServerError = statusCode >= 500 && statusCode < 600
       if (isServerError) {
-        console.log(
-          `Response (status=${statusCode}) for '${resp.url}'` +
-            ` indicates server error for '${entry.request.url}'. ` +
-            `Putting request back in queue '${this._name}'; will retry later.`,
-          err,
-        )
-        await this.unshiftRequest(entry)
-        // FIXME probably need to throw here to stop an immediate retry
-        return // other queued reqs probably won't succeed (right now), wait for next sync
+        // other queued reqs probably won't succeed (right now), wait for next sync
+        throw (() => {
+          // throwing so catch block can handle unshifting, etc
+          const result = new Error(
+            `Response indicates server error (status=${statusCode})`,
+          )
+          result.name = 'Server5xxError'
+          return result
+        })()
       }
     } catch (err) {
       // "Failed to fetch" lands us here. It could be a network error or a
@@ -117,8 +117,7 @@ async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
       await this.unshiftRequest(entry)
       console.log(
         `Request for '${entry.request.url}' ` +
-          `failed to replay, putting it back in queue '${this._name}'. Error was:`,
-        err,
+          `failed to replay, putting it back in queue '${this._name}'.`,
       )
       // Note: we *need* to throw here to stop an immediate retry on sync.
       // Workbox does this for good reason: it needs to process items that were
