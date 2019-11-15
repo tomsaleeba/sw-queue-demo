@@ -52,6 +52,10 @@
       the queue multiple times concurrently)
     </p>
     <p>
+      <label>
+        <input type="checkbox" v-model="isCreateInvalidObs" />
+        Cause a 4xx status code by creating an invalid obs
+      </label>
       <button @click="doCreateObs">Create observation</button>
     </p>
     <p>Status = {{ theStatus }}</p>
@@ -64,18 +68,25 @@
         <tr>
           <th>ID</th>
           <th>uniqueID</th>
+          <th>foo</th>
           <th># photos</th>
           <th># obsFields</th>
           <th>Project ID</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="curr of obsList" :key="curr.id" class="obs-item">
           <td>{{ curr.id }}</td>
           <td>{{ curr.uniqueId }}</td>
+          <td>{{ curr.foo }}</td>
           <td>{{ curr.photos.length }}</td>
           <td>{{ curr.obsFields.length }}</td>
           <td>{{ curr.project }}</td>
+          <td>
+            <button @click="doDelete(curr.id)">delete</button>
+            <button @click="doObsPut(curr)">update</button>
+          </td>
         </tr>
         <tr v-if="!obsList.length">
           <td>(empty)</td>
@@ -87,16 +98,7 @@
 
 <script>
 import fetch from 'fetch-retry'
-import {
-  endpointPrefix,
-  obsFieldName,
-  obsFieldsFieldName,
-  photosFieldName,
-  projectIdFieldName,
-  refreshObsMsg,
-  syncDepsQueueMsg,
-  syncObsQueueMsg,
-} from './constants.mjs'
+import * as constants from './constants.mjs'
 
 const someJpg = new Blob(Uint8Array.from([0xff, 0xd8, 0xff, 0xdb]), {
   type: 'image/jpeg',
@@ -109,6 +111,7 @@ export default {
       theStatus: '(nothing yet)',
       swStatus: '(not checked)',
       obsList: [],
+      isCreateInvalidObs: false,
     }
   },
   mounted() {
@@ -122,9 +125,12 @@ export default {
         return
       }
       navigator.serviceWorker.addEventListener('message', event => {
-        switch (event.data) {
-          case refreshObsMsg:
+        switch (event.data.id) {
+          case constants.refreshObsMsg:
             this.refreshObs()
+            break
+          case constants.failedToUploadObsMsg:
+            alert(event.data.msg)
             break
           default:
             console.log('Client received message from SW: ' + event.data)
@@ -156,10 +162,16 @@ export default {
     async doCreateObs() {
       console.log('creating obs...')
       this.theStatus = 'processing...'
-      const obs = {
-        uniqueId: btoa(Date.now()),
-        foo: 'bar',
-      }
+      const obs = (() => {
+        const result = {
+          uniqueId: btoa(Date.now()),
+          foo: 'bar',
+        }
+        if (this.isCreateInvalidObs) {
+          delete result.foo
+        }
+        return result
+      })()
       const photo1 = {
         file: someJpg,
       }
@@ -222,12 +234,13 @@ export default {
       }
       console.debug('We have SW support, POSTing bundle')
       const fd = new FormData()
-      fd.append(obsFieldName, JSON.stringify(obs))
-      fd.append(photosFieldName, photo1.file, 'photo1')
-      fd.append(photosFieldName, photo2.file, 'photo2')
-      fd.append(obsFieldsFieldName, JSON.stringify(obsField1))
-      fd.append(obsFieldsFieldName, JSON.stringify(obsField2))
-      fd.append(projectIdFieldName, JSON.stringify(1234))
+      fd.append(constants.obsFieldName, JSON.stringify(obs))
+      fd.append(constants.photosFieldName, photo1.file, 'photo1')
+      fd.append(constants.photosFieldName, photo2.file, 'photo2')
+      fd.append(constants.obsFieldsFieldName, JSON.stringify(obsField1))
+      fd.append(constants.obsFieldsFieldName, JSON.stringify(obsField2))
+      fd.append(constants.projectIdFieldName, JSON.stringify(1234))
+      // FIXME remove param
       const resp = await fetch('http://local.service-worker/queue/obs-bundle', {
         method: 'POST',
         body: fd,
@@ -246,7 +259,7 @@ export default {
     },
     async refreshObs() {
       console.debug('refreshing obs list...')
-      const resp = await fetch(`${endpointPrefix}/observations`, {
+      const resp = await fetch(`${constants.endpointPrefix}/observations`, {
         method: 'GET',
         mode: 'cors',
       })
@@ -254,7 +267,7 @@ export default {
     },
     async _doPost(reqType, body, headers) {
       try {
-        const resp = await fetch(`${endpointPrefix}/${reqType}`, {
+        const resp = await fetch(`${constants.endpointPrefix}/${reqType}`, {
           method: 'POST',
           mode: 'cors',
           ...headers,
@@ -306,12 +319,91 @@ export default {
       }
     },
     triggerDepsQueue() {
-      this._sendMessageToSw(syncDepsQueueMsg)
+      this._sendMessageToSw(constants.syncDepsQueueMsg)
     },
     triggerObsQueue() {
-      this._sendMessageToSw(syncObsQueueMsg).then(() => {
+      this._sendMessageToSw(constants.syncObsQueueMsg).then(() => {
         console.debug('obs-sync trigger is complete')
       })
+    },
+    async doDelete(obsId) {
+      try {
+        const resp = await fetch(
+          `${constants.endpointPrefix}/observations/${obsId}`,
+          {
+            method: 'DELETE',
+            mode: 'cors',
+          },
+        )
+        if (!resp.ok) {
+          throw new Error(
+            'Resp from deleting obs was not ok, status=' + resp.status,
+          )
+        }
+        await this.refreshObs()
+      } catch (err) {
+        console.error(`Failed to delete observation with obsId=${obsId}`, err)
+      }
+    },
+    async doObsPut(record) {
+      try {
+        const updatedRecord = {
+          // just pretend we changed something
+          obsId: record.id,
+          uniqueId: record.uniqueId,
+        }
+        const fd = new FormData()
+        fd.append(constants.obsFieldName, JSON.stringify(updatedRecord))
+        // we would attach new photos and obsFields, as well as deleted of both too
+        const resp = await fetch(
+          'http://local.service-worker/queue/obs-bundle',
+          {
+            method: 'PUT',
+            mode: 'cors',
+            body: fd,
+          },
+        )
+        if (!resp.ok) {
+          throw new Error(
+            'Resp from updating obs using sw, was not ok, status=' +
+              resp.status,
+          )
+        }
+        return
+      } catch (err) {
+        console.warn(
+          `Failed to update observation with obsId=${obsId}` +
+            ` using service worker, falling back to doing the call directly`,
+          err,
+        )
+      }
+      try {
+        const resp = await fetch(
+          `${constants.endpointPrefix}/observations/${obsId}`,
+          {
+            method: 'PUT',
+            mode: 'cors',
+            headers: {
+              'Content-type': 'application/json',
+            },
+            body: JSON.stringify(updatedRecord),
+          },
+        )
+        if (!resp.ok) {
+          throw new Error(
+            'Resp from updating obs directly (no sw) was not ok, status=' +
+              resp.status,
+          )
+        }
+        // ...and pretend we also process all the new/delete photos and obsFields
+        await this.refreshObs()
+      } catch (err) {
+        console.error(
+          `Failed to update observation with obsId=${obsId}` +
+            `. We didn't use the service worker so we have no other options`,
+          err,
+        )
+      }
     },
   },
 }

@@ -18,6 +18,10 @@
   - why do we see the log msg for a synthetic error once on the server but the
       error doesn't seem to actually happen. But if we see the log msg twice,
       then the error does happen.
+  - handle errors after obs and deps calls with all the clean up required
+  - the client error callback for deps is a mess
+  - add checkbox to generate an error in a deps call so we can see cleanup happen
+  - show local-only records so the UI can act one them
 
 # Assumption:
   - service worker is a newer API than IndexedDB so anywhere we have a SW, we'll

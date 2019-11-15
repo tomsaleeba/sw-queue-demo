@@ -26,11 +26,41 @@ app.post('/v1/observations', bodyParser.json(), (req, res) => {
   if (isReturn500Error()) {
     return res.status(500).json({ msg: 'Server exploded or something' })
   }
+  const isObsValid = !!req.body.foo
+  if (!isObsValid) {
+    return res
+      .status(400)
+      .json({ msg: 'Invalid observation provided. We wanna see that foo!' })
+  }
   const id = Date.now()
   dataStore[id] = { id, photos: [], obsFields: [], ...req.body }
   setTimeout(() => {
     res.json(dataStore[id])
   }, 195)
+})
+
+app.put('/v1/observations/:obsId', bodyParser.json(), (req, res) => {
+  const record = dataStore[req.params.obsId]
+  if (!record) {
+    return res
+      .status(404)
+      .json({ msg: 'No obs found for ID=' + req.params.obsId })
+  }
+  const val = parseInt(record.foo) || 0
+  record.foo = val + 1
+  dataStore[req.params.obsId] = record
+  return res.json(record)
+})
+
+app.delete('/v1/observations/:obsId', bodyParser.json(), (req, res) => {
+  const record = dataStore[req.params.obsId]
+  if (!record) {
+    return res
+      .status(404)
+      .json({ msg: 'No obs found for ID=' + req.params.obsId })
+  }
+  delete dataStore[req.params.obsId]
+  return res.json(record)
 })
 
 app.post('/v1/photos', formidable(), (req, res) => {

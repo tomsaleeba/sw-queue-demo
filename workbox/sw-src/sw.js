@@ -3,37 +3,44 @@ import { Queue } from 'workbox-background-sync/Queue.mjs'
 import { registerRoute } from 'workbox-routing/registerRoute.mjs'
 import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
 import localForage from 'localforage' // could use idb-keyval instead if we trust all indexeddb implementations will work properly
-import {
-  endpointPrefix,
-  obsFieldName,
-  obsFieldsFieldName,
-  photosFieldName,
-  projectIdFieldName,
-  refreshObsMsg,
-  syncObsQueueMsg,
-  syncDepsQueueMsg,
-} from '../src/constants.mjs'
+import * as constants from '../src/constants.mjs'
+
+const createTag = 'create:'
+const updateTag = 'update:'
 
 console.log('SW Startup!')
+
+// FIXME to get the full offline experience, we need to also show records that
+// are queued but haven't been processed. This is so the UI can delete/update
+// records that haven't been processed to create some real havoc.
 
 const depsQueue = new Queue('obs-dependant-queue', {
   maxRetentionTime: 365 * 24 * 60, // if it doesn't succeed after year, let it die
   async onSync() {
     const boundFn = onSyncWithPerItemCallback.bind(this)
     await boundFn(
-      async resp => {
+      async (req, resp) => {
         const isProjectLinkingResp = resp.url.endsWith('/project_observations')
         // FIXME should we also check resp.ok?
         if (!isProjectLinkingResp) {
           return
         }
         console.debug('resp IS a project linkage one')
-        sendMessageToAllClients(refreshObsMsg)
+        sendMessageToAllClients({ id: constants.refreshObsMsg })
       },
-      async resp => {
-        // FIXME implement client error cb
+      async (entry, resp) => {
+        // FIXME need to know if we were creating or updating
+        // FIXME this whole block is a mess
+        const uniqueId = entry.metadata.obsUnqiueId
+        sendMessageToAllClients({
+          id: constants.failedToUploadObsMsg,
+          msg: `Failed to completely update observation with uniqueId=${uniqueId}`,
+        })
+        // FIXME delete the deps from localForage
+        await localForage.removeItem(updateTag + uniqueId)
+        // FIXME do DELETE for partial obs record on remote
+        // FIXME do we need the obsId here so we can create the DELETE req?
         throw new Error('FIXME implement me')
-        // do we need to rollback the obs?
       },
     )
   },
@@ -47,15 +54,29 @@ const obsQueue = new Queue('obs-queue', {
   async onSync() {
     const boundFn = onSyncWithPerItemCallback.bind(this)
     await boundFn(
-      async resp => {
+      async (req, resp) => {
         let obsId = '(not sure)'
         try {
           const obs = await resp.json()
           obsId = obs.id
-          await onObsPostSuccess(obs)
+          switch (req.method) {
+            case 'POST':
+              await onObsPostSuccess(obs)
+              break
+            case 'PUT':
+            // we would generate all the reqs for deps
+            case 'DELETE':
+              sendMessageToAllClients({ id: constants.refreshObsMsg })
+              break
+            default:
+              throw new Error(
+                `Programmer error: we don't know how to handle method=${req.method}`,
+              )
+          }
         } catch (err) {
-          // an error happened while *queuing*. Errors from processing the queue
-          // will not be caught here!
+          // an error happened while *queuing* reqs. Errors from *processing*
+          // the queue will not be caught here!
+
           // FIXME an error that happens while trying to call onObsPostSuccess
           // (ie. this try block) will mean that we never queue up the deps for a
           // successful obs. Might need extra logic to scan obs on the remote and
@@ -69,10 +90,34 @@ const obsQueue = new Queue('obs-queue', {
           throw err
         }
       },
-      async resp => {
-        // FIXME implement client error cb
-        throw new Error('FIXME implement me')
-        // maybe notify client page that this failed?
+      async (entry, resp) => {
+        switch (entry.request.method) {
+          case 'POST':
+            const uniqueId = entry.metadata.obsUnqiueId
+            sendMessageToAllClients({
+              id: constants.failedToUploadObsMsg,
+              msg: `Failed to completely create observation with uniqueId=${uniqueId}`,
+            })
+            // FIXME what if we have pending PUTs or DELETEs?
+            break
+            await localForage.removeItem(createTag + uniqueId)
+            break
+          case 'DELETE':
+            // I guess it's already been deleted
+            // FIXME
+            throw new Error('FIXME do we need to notify the client?')
+            break
+          case 'PUT':
+            // FIXME make sure we don't retry this req
+            throw new Error(
+              'FIXME what do we do here? Notify UI, remove any pending deps reqs.',
+            )
+            break
+          default:
+            throw new Error(
+              `Programmer error: we don't know how to handle method=${entry.request.method}`,
+            )
+        }
       },
     )
   },
@@ -96,7 +141,7 @@ async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
             ` indicates client error. Calling cleanup callback, then ` +
             `continuing processing the queue`,
         )
-        await clientErrorCb(resp)
+        await clientErrorCb(entry, resp)
         continue // other queued reqs may succeed
       }
       const isServerError = statusCode >= 500 && statusCode < 600
@@ -134,7 +179,7 @@ async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
       })()
     }
     try {
-      await successCb(resp)
+      await successCb(entry.request, resp)
     } catch (err) {
       console.error('Failed during callback for a queue item, re-throwing...')
       // FIXME probably shouldn't throw here. Not sure what to do. Certainly
@@ -157,7 +202,7 @@ async function onObsPostSuccess(obsResp) {
   // blobs. If it does, you need to reserialise them to ArrayBuffers to avoid
   // heartache.
   // https://developers.google.com/web/fundamentals/instant-and-offline/web-storage/indexeddb-best-practices#not_everything_can_be_stored_in_indexeddb_on_all_platforms
-  const depsRecord = await localForage.getItem(obsUnqiueId)
+  const depsRecord = await localForage.getItem(createTag + obsUnqiueId)
   if (!depsRecord) {
     // FIXME this is probably an error. We *always* have deps!
     console.warn(`No deps found for obsUnqiueId=${obsUnqiueId}`)
@@ -170,7 +215,7 @@ async function onObsPostSuccess(obsResp) {
       fd.append('file', curr)
       console.debug('Pushing a photo to the queue')
       await depsQueue.pushRequest({
-        request: new Request(endpointPrefix + '/photos', {
+        request: new Request(constants.endpointPrefix + '/photos', {
           method: 'POST',
           mode: 'cors',
           body: fd,
@@ -180,7 +225,7 @@ async function onObsPostSuccess(obsResp) {
     for (const curr of depsRecord.obsFields) {
       console.debug('Pushing an obsField to the queue')
       await depsQueue.pushRequest({
-        request: new Request(endpointPrefix + '/obs-fields', {
+        request: new Request(constants.endpointPrefix + '/obs-fields', {
           method: 'POST',
           mode: 'cors',
           headers: {
@@ -195,7 +240,7 @@ async function onObsPostSuccess(obsResp) {
     }
     console.debug('Pushing project linkage call to the queue')
     await depsQueue.pushRequest({
-      request: new Request(endpointPrefix + '/project_observations', {
+      request: new Request(constants.endpointPrefix + '/project_observations', {
         method: 'POST',
         mode: 'cors',
         headers: {
@@ -224,58 +269,138 @@ async function onObsPostSuccess(obsResp) {
   await localForage.removeItem(obsUnqiueId)
 }
 
-const handler = async ({ url, event, params }) => {
-  console.debug('Service worker processing POSTed bundle')
-  const formData = await event.request.formData()
-  const obs = JSON.parse(formData.get('obs'))
-  const photos = formData.getAll(photosFieldName)
-  const obsFields = formData.getAll(obsFieldsFieldName)
-  const projectId = formData.get(projectIdFieldName)
-  await localForage.setItem(obs.uniqueId, {
-    uniqueId: obs.uniqueId,
-    photos,
-    obsFields,
-    projectId,
-  })
-  try {
-    // FIXME seeing "Uncaught (in promise) Error: queue-replay-failed" when the
-    // queue processing gets "Failed to fetch". This it's Dexie getting in the
-    // way (see Readme TODOs). We don't want to see uncaught rejections!
-    await obsQueue.pushRequest({
-      request: new Request(endpointPrefix + '/observations', {
-        method: 'POST',
-        mode: 'cors',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(obs),
-      }),
-    })
-    // TODO the real sync doesn't seem to check before running so you can get
-    // two threads of processing running at once, messy. If the queue has seen
-    // an error, it won't start processing when we push a new request so that's
-    // when this would be good.
-    // if (!obsQueue._syncInProgress) {
-    //   console.debug('obsQueue is not currently processing, giving it a kick')
-    //   obsQueue._onSync() // FIXME do we need to catch errors here?
-    // }
-  } catch (err) {
-    // FIXME not sure what to do here? We should probably re-throw so the
-    // client knows we failed. Is it important for the client to distinguish
-    // between "no SW" and "there is a SW but it failed"?
-    console.error('Failed to push obs req onto queue', err)
-  }
-  return new Response(
-    JSON.stringify({
-      result: 'queued',
-      photoCount: photos.length,
-      obsFieldCount: obsFields.length,
+registerRoute(
+  'http://local.service-worker/queue/obs-bundle',
+  async ({ url, event, params }) => {
+    console.debug('Service worker processing POSTed bundle')
+    const formData = await event.request.formData()
+    const obs = JSON.parse(formData.get(constants.obsFieldName))
+    const photos = formData.getAll(constants.photosFieldName)
+    const obsFields = formData.getAll(constants.obsFieldsFieldName)
+    const projectId = formData.get(constants.projectIdFieldName)
+    await localForage.setItem(createTag + obs.uniqueId, {
+      uniqueId: obs.uniqueId,
+      photos,
+      obsFields,
       projectId,
-    }),
-  )
-}
+    })
+    try {
+      await obsQueue.pushRequest({
+        metadata: {
+          // details used when things go wrong so we can clean up
+          obsUnqiueId: obs.uniqueId,
+        },
+        request: new Request(constants.endpointPrefix + '/observations', {
+          method: 'POST',
+          mode: 'cors',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(obs),
+        }),
+      })
+      // TODO the real sync doesn't seem to check before running so you can get
+      // two threads of processing running at once, messy. If the queue has seen
+      // an error, it won't start processing when we push a new request so that's
+      // when this would be good.
+      // if (!obsQueue._syncInProgress) {
+      //   console.debug('obsQueue is not currently processing, giving it a kick')
+      //   obsQueue._onSync() // FIXME do we need to catch errors here?
+      // }
+    } catch (err) {
+      // FIXME not sure what to do here? We should probably re-throw so the
+      // client knows we failed. Is it important for the client to distinguish
+      // between "no SW" and "there is a SW but it failed"?
+      console.error('Failed to push obs req onto queue', err)
+    }
+    return new Response(
+      JSON.stringify({
+        result: 'queued',
+        photoCount: photos.length,
+        obsFieldCount: obsFields.length,
+        projectId,
+      }),
+    )
+  },
+  'POST',
+)
 
-registerRoute('http://local.service-worker/queue/obs-bundle', handler, 'POST')
+registerRoute(
+  'http://local.service-worker/queue/obs-bundle',
+  async ({ url, event, params }) => {
+    console.debug('Service worker processing PUTed bundle')
+    const formData = await event.request.formData()
+    const obs = JSON.parse(formData.get(constants.obsFieldName))
+    // in a real system, we'd break apart the bundle in the same way as the
+    // POST. We could queue all the deps because we have the obsId but it's
+    // easier to keep them in localForage so it's easy to clean up if anything
+    // goes wrong
+    await localForage.setItem(updateTag + obs.uniqueId, {
+      uniqueId: obs.uniqueId,
+      newPhotos: [],
+      newObsFields: [],
+      removedPhotos: [],
+      removedObsFields: [],
+    })
+    // FIXME it's possible for the PUT to be queued while the POST is still
+    // waiting. If this is the case, we should probably stash the obs PUT req
+    // until we have the response from the POST. Then when we get the
+    // response from the POST, we need to generate the obs PUT request. Maybe
+    // if the obsId is some placeholder token then we know to wait for the
+    // POST resp?
+    await obsQueue.pushRequest({
+      metadata: {
+        // details used when things go wrong so we can clean up
+        obsUnqiueId: obs.uniqueId,
+        obsId: obs.obsId,
+      },
+      request: new Request(
+        `${constants.endpointPrefix}/observations/${obs.obsId}`,
+        {
+          method: 'PUT',
+          mode: 'cors',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      ),
+    })
+    // no try-catch so if anything goes wrong, the client can deal with it
+    return new Response(
+      JSON.stringify({
+        result: 'queued',
+        // we would send back a summary of what we queued here
+      }),
+    )
+  },
+  'PUT',
+)
+
+registerRoute(
+  new RegExp(`${constants.endpointPrefix}/observations/\d*`),
+  async ({ url, event, params }) => {
+    const obsId = url.pathname.substr(url.pathname.lastIndexOf('/') + 1)
+    console.log('found id ' + obsId)
+    const isObsLocalOnly = false
+    if (isObsLocalOnly) {
+      // FIXME if we have this ID queued, kill it and shortcircuit
+      sendMessageToAllClients({ id: constants.refreshObsMsg })
+      return new Response(JSON.stringify({ result: 'deleted' }))
+    }
+    // FIXME if we're not connected, we need to queue this req up
+    await obsQueue.pushRequest({
+      request: new Request(
+        `${constants.endpointPrefix}/observations/${obsId}`,
+        {
+          method: 'DELETE',
+          mode: 'cors',
+        },
+      ),
+    })
+    return new Response(JSON.stringify({ result: 'queued' }))
+  },
+  'DELETE',
+)
 
 // Install Service Worker
 self.addEventListener('install', function(event) {
@@ -289,7 +414,7 @@ self.addEventListener('activate', function(event) {
 
 self.addEventListener('message', function(event) {
   switch (event.data) {
-    case syncDepsQueueMsg:
+    case constants.syncDepsQueueMsg:
       if (depsQueue._syncInProgress) {
         // FIXME doesn't seem to work. The flag doesn't seem reliable
         console.log('depsQueue already seems to be doing a sync')
@@ -300,7 +425,7 @@ self.addEventListener('message', function(event) {
         console.warn('Manually triggered depsQueue sync has failed', err)
       })
       return
-    case syncObsQueueMsg:
+    case constants.syncObsQueueMsg:
       if (obsQueue._syncInProgress) {
         // FIXME doesn't seem to work. The flag doesn't seem reliable
         console.log('obsQueue already seems to be doing a sync')
