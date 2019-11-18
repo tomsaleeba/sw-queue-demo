@@ -69,7 +69,6 @@ app.post('/v1/photos', formidable(), (req, res) => {
   if (!record) {
     return res.status(404).json({ msg: 'No obs found for ID=' + obsId })
   }
-  const isFirstPhoto = record.photos.length === 1
   if (isReturnFailedToFetchError()) {
     console.log(
       new Date().toLocaleString() + '  triggering a synthetic error on /photos',
@@ -89,6 +88,14 @@ app.post('/v1/obs-fields', bodyParser.json(), (req, res) => {
   const record = dataStore[obsId]
   if (!record) {
     return res.status(404).json({ msg: 'No obs found for ID=' + obsId })
+  }
+  const isObsValid = !!req.body.field.value
+  if (!isObsValid) {
+    return res
+      .status(400)
+      .json({
+        msg: 'Invalid obsField provided. You must supply a "value" field',
+      })
   }
   record.obsFields.push(req.body.field)
   dataStore[obsId] = record

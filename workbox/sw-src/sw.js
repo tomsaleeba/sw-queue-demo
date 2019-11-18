@@ -7,6 +7,7 @@ import * as constants from '../src/constants.mjs'
 
 const createTag = 'create:'
 const updateTag = 'update:'
+const IGNORE_REMAINING_DEPS_FLAG = 'ignoreRemainingDepReqs'
 
 console.log('SW Startup!')
 
@@ -20,27 +21,86 @@ const depsQueue = new Queue('obs-dependant-queue', {
     const boundFn = onSyncWithPerItemCallback.bind(this)
     await boundFn(
       async (req, resp) => {
-        const isProjectLinkingResp = resp.url.endsWith('/project_observations')
-        // FIXME should we also check resp.ok?
-        if (!isProjectLinkingResp) {
-          return
+        switch (req.method) {
+          case 'POST':
+            const isProjectLinkingResp = resp.url.endsWith(
+              '/project_observations',
+            )
+            if (!isProjectLinkingResp) {
+              return
+            }
+            console.debug(
+              'resp IS a project linkage one, this marks the end of an obs',
+            )
+            sendMessageToAllClients({ id: constants.refreshObsMsg })
+            return
+          case 'PUT':
+          // probably don't have to do anything
+          case 'DELETE':
+            // probably don't have to do anything
+            throw new Error(
+              `Lazy programmer error: not implemented for this demo`,
+            )
+          default:
+            throw new Error(
+              `Programmer error: we don't know how to handle method=${
+                req.method
+              }`,
+            )
         }
-        console.debug('resp IS a project linkage one')
-        sendMessageToAllClients({ id: constants.refreshObsMsg })
       },
       async (entry, resp) => {
-        // FIXME need to know if we were creating or updating
-        // FIXME this whole block is a mess
-        const uniqueId = entry.metadata.obsUnqiueId
-        sendMessageToAllClients({
-          id: constants.failedToUploadObsMsg,
-          msg: `Failed to completely update observation with uniqueId=${uniqueId}`,
-        })
-        // FIXME delete the deps from localForage
-        await localForage.removeItem(updateTag + uniqueId)
-        // FIXME do DELETE for partial obs record on remote
-        // FIXME do we need the obsId here so we can create the DELETE req?
-        throw new Error('FIXME implement me')
+        const uniqueId = entry.metadata.obsUniqueId
+        const obsId = entry.metadata.obsId
+        // at this point we have a choice: press on and accept that we'll be
+        // missing some of the data on the remote, or rollback everything on
+        // the remote and do whatever is necessary to fix it up.
+        switch (entry.request.method) {
+          case 'POST':
+            sendMessageToAllClients({
+              id: constants.failedToUploadObsMsg,
+              msg:
+                `Failed to completely create observation with ` +
+                `obsId=${obsId},uniqueId=${uniqueId}`,
+            })
+            console.debug('Handling POST client error by rolling back obs')
+            await obsQueue.unshiftRequest({
+              metadata: {
+                obsId: obsId,
+                obsUniqueId: uniqueId,
+              },
+              request: new Request(
+                `${constants.endpointPrefix}/observations/${obsId}`,
+                {
+                  method: 'DELETE',
+                  mode: 'cors',
+                },
+              ),
+            })
+            return { flag: IGNORE_REMAINING_DEPS_FLAG }
+          case 'PUT': // we don't really update deps, we just delete+create
+            sendMessageToAllClients({
+              id: constants.failedToUploadObsMsg,
+              msg:
+                `Failed to completely update observation with ` +
+                `obsId=${obsId},uniqueId=${uniqueId}`,
+            })
+            return { flag: IGNORE_REMAINING_DEPS_FLAG }
+          case 'DELETE':
+            // if we get a client error when trying to do a deps req then we
+            // don't want to delete the obs but we need to do something. It
+            // could be a 404, in which case we don't have to worry. If it's a
+            // 401 then it's more serious but we can't recover here.
+            throw new Error(
+              `Lazy programmer error: not implemented for this demo`,
+            )
+          default:
+            throw new Error(
+              `Programmer error: we don't know how to handle method=${
+                entry.request.method
+              }`,
+            )
+        }
       },
     )
   },
@@ -70,7 +130,9 @@ const obsQueue = new Queue('obs-queue', {
               break
             default:
               throw new Error(
-                `Programmer error: we don't know how to handle method=${req.method}`,
+                `Programmer error: we don't know how to handle method=${
+                  req.method
+                }`,
               )
           }
         } catch (err) {
@@ -93,7 +155,7 @@ const obsQueue = new Queue('obs-queue', {
       async (entry, resp) => {
         switch (entry.request.method) {
           case 'POST':
-            const uniqueId = entry.metadata.obsUnqiueId
+            const uniqueId = entry.metadata.obsUniqueId
             sendMessageToAllClients({
               id: constants.failedToUploadObsMsg,
               msg: `Failed to completely create observation with uniqueId=${uniqueId}`,
@@ -115,7 +177,9 @@ const obsQueue = new Queue('obs-queue', {
             break
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${entry.request.method}`,
+              `Programmer error: we don't know how to handle method=${
+                entry.request.method
+              }`,
             )
         }
       },
@@ -124,10 +188,19 @@ const obsQueue = new Queue('obs-queue', {
 })
 
 async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
+  const obsIdsToIgnore = []
   let entry
   while ((entry = await this.shiftRequest())) {
     let resp
     try {
+      const obsId = entry.metadata.obsId
+      const isIgnoredObsId = obsIdsToIgnore.includes(obsId)
+      if (isIgnoredObsId) {
+        console.debug(
+          `Ignoring deps req as it relates to an ignored obsId=${obsId}`,
+        )
+        continue
+      }
       resp = await fetch(entry.request.clone())
       console.log(
         `Request for '${entry.request.url}' ` +
@@ -141,7 +214,12 @@ async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
             ` indicates client error. Calling cleanup callback, then ` +
             `continuing processing the queue`,
         )
-        await clientErrorCb(entry, resp)
+        const cbResult = await clientErrorCb(entry, resp)
+        const isIgnoreDepsForId =
+          cbResult && cbResult.flag === IGNORE_REMAINING_DEPS_FLAG
+        if (isIgnoreDepsForId) {
+          obsIdsToIgnore.push(obsId)
+        }
         continue // other queued reqs may succeed
       }
       const isServerError = statusCode >= 500 && statusCode < 600
@@ -192,20 +270,20 @@ async function onSyncWithPerItemCallback(successCb, clientErrorCb) {
 async function onObsPostSuccess(obsResp) {
   // it would be nice to print a warning if there are still items in the queue.
   // For this demo, things can get crazy when this is the case.
-  const obsUnqiueId = obsResp.uniqueId
+  const obsUniqueId = obsResp.uniqueId
   const obsId = obsResp.id
   console.debug(
-    `Running post-success block for obs unique ID=${obsUnqiueId}, ` +
+    `Running post-success block for obs unique ID=${obsUniqueId}, ` +
       `which has ID=${obsId}`,
   )
   // We're using localForage in the hope that webkit won't silently eat our
   // blobs. If it does, you need to reserialise them to ArrayBuffers to avoid
   // heartache.
   // https://developers.google.com/web/fundamentals/instant-and-offline/web-storage/indexeddb-best-practices#not_everything_can_be_stored_in_indexeddb_on_all_platforms
-  const depsRecord = await localForage.getItem(createTag + obsUnqiueId)
+  const depsRecord = await localForage.getItem(createTag + obsUniqueId)
   if (!depsRecord) {
     // FIXME this is probably an error. We *always* have deps!
-    console.warn(`No deps found for obsUnqiueId=${obsUnqiueId}`)
+    console.warn(`No deps found for obsUniqueId=${obsUniqueId}`)
     return
   }
   try {
@@ -215,6 +293,11 @@ async function onObsPostSuccess(obsResp) {
       fd.append('file', curr)
       console.debug('Pushing a photo to the queue')
       await depsQueue.pushRequest({
+        metadata: {
+          // details used when things go wrong so we can clean up
+          obsId: obsId,
+          obsUniqueId: obsUniqueId,
+        },
         request: new Request(constants.endpointPrefix + '/photos', {
           method: 'POST',
           mode: 'cors',
@@ -225,6 +308,11 @@ async function onObsPostSuccess(obsResp) {
     for (const curr of depsRecord.obsFields) {
       console.debug('Pushing an obsField to the queue')
       await depsQueue.pushRequest({
+        metadata: {
+          // details used when things go wrong so we can clean up
+          obsId: obsId,
+          obsUniqueId: obsUniqueId,
+        },
         request: new Request(constants.endpointPrefix + '/obs-fields', {
           method: 'POST',
           mode: 'cors',
@@ -240,6 +328,11 @@ async function onObsPostSuccess(obsResp) {
     }
     console.debug('Pushing project linkage call to the queue')
     await depsQueue.pushRequest({
+      metadata: {
+        // details used when things go wrong so we can clean up
+        obsId: obsId,
+        obsUniqueId: obsUniqueId,
+      },
       request: new Request(constants.endpointPrefix + '/project_observations', {
         method: 'POST',
         mode: 'cors',
@@ -263,10 +356,10 @@ async function onObsPostSuccess(obsResp) {
     throw err
   }
   console.debug(
-    'Cleaning up after ourselves. All requests have been generated' +
-      ' and queued up so we do not need this data anymore',
+    'Cleaning up after ourselves. All requests have been generated and ' +
+      `queued up for uniqueId=${obsUniqueId}, so we do not need this data anymore`,
   )
-  await localForage.removeItem(obsUnqiueId)
+  await localForage.removeItem(createTag + obsUniqueId)
 }
 
 registerRoute(
@@ -276,7 +369,9 @@ registerRoute(
     const formData = await event.request.formData()
     const obs = JSON.parse(formData.get(constants.obsFieldName))
     const photos = formData.getAll(constants.photosFieldName)
-    const obsFields = formData.getAll(constants.obsFieldsFieldName)
+    const obsFields = formData
+      .getAll(constants.obsFieldsFieldName)
+      .map(e => JSON.parse(e))
     const projectId = formData.get(constants.projectIdFieldName)
     await localForage.setItem(createTag + obs.uniqueId, {
       uniqueId: obs.uniqueId,
@@ -288,7 +383,7 @@ registerRoute(
       await obsQueue.pushRequest({
         metadata: {
           // details used when things go wrong so we can clean up
-          obsUnqiueId: obs.uniqueId,
+          obsUniqueId: obs.uniqueId,
         },
         request: new Request(constants.endpointPrefix + '/observations', {
           method: 'POST',
@@ -351,7 +446,7 @@ registerRoute(
     await obsQueue.pushRequest({
       metadata: {
         // details used when things go wrong so we can clean up
-        obsUnqiueId: obs.uniqueId,
+        obsUniqueId: obs.uniqueId,
         obsId: obs.obsId,
       },
       request: new Request(
@@ -389,6 +484,10 @@ registerRoute(
     }
     // FIXME if we're not connected, we need to queue this req up
     await obsQueue.pushRequest({
+      metadata: {
+        obsId: obsId,
+        // obsUniqueId: FIXME find this
+      },
       request: new Request(
         `${constants.endpointPrefix}/observations/${obsId}`,
         {

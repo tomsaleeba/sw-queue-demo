@@ -54,8 +54,17 @@
     <p>
       <label>
         <input type="checkbox" v-model="isCreateInvalidObs" />
-        Cause a 4xx status code by creating an invalid obs
+        Cause a 4xx status code by creating an invalid <strong>obs</strong>
       </label>
+    </p>
+    <p>
+      <label>
+        <input type="checkbox" v-model="isCreateInvalidDep" />
+        Cause a 4xx status code by creating an invalid
+        <strong>obsField record</strong>
+      </label>
+    </p>
+    <p>
       <button @click="doCreateObs">Create observation</button>
     </p>
     <p>Status = {{ theStatus }}</p>
@@ -112,6 +121,7 @@ export default {
       swStatus: '(not checked)',
       obsList: [],
       isCreateInvalidObs: false,
+      isCreateInvalidDep: false,
     }
   },
   mounted() {
@@ -181,6 +191,9 @@ export default {
       const obsField1 = {
         fieldId: 11,
         value: 'yes',
+      }
+      if (this.isCreateInvalidDep) {
+        delete obsField1.value
       }
       const obsField2 = {
         fieldId: 89,
