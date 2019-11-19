@@ -1,5 +1,6 @@
 import { Plugin as BackgroundSyncPlugin } from 'workbox-background-sync/Plugin.mjs'
 import { Queue } from 'workbox-background-sync/Queue.mjs'
+import { precacheAndRoute as workboxPrecacheAndRoute } from 'workbox-precaching/precacheAndRoute.mjs'
 import { registerRoute } from 'workbox-routing/registerRoute.mjs'
 import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
 import localForage from 'localforage' // could use idb-keyval instead if we trust all indexeddb implementations will work properly
@@ -43,9 +44,7 @@ const depsQueue = new Queue('obs-dependant-queue', {
             )
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${
-                req.method
-              }`,
+              `Programmer error: we don't know how to handle method=${req.method}`,
             )
         }
       },
@@ -96,9 +95,7 @@ const depsQueue = new Queue('obs-dependant-queue', {
             )
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${
-                entry.request.method
-              }`,
+              `Programmer error: we don't know how to handle method=${entry.request.method}`,
             )
         }
       },
@@ -130,9 +127,7 @@ const obsQueue = new Queue('obs-queue', {
               break
             default:
               throw new Error(
-                `Programmer error: we don't know how to handle method=${
-                  req.method
-                }`,
+                `Programmer error: we don't know how to handle method=${req.method}`,
               )
           }
         } catch (err) {
@@ -177,9 +172,7 @@ const obsQueue = new Queue('obs-queue', {
             break
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${
-                entry.request.method
-              }`,
+              `Programmer error: we don't know how to handle method=${entry.request.method}`,
             )
         }
       },
@@ -564,3 +557,5 @@ function sendMessageToAllClients(msg) {
     })
   })
 }
+
+workboxPrecacheAndRoute([])

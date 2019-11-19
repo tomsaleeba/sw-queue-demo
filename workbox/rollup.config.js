@@ -1,25 +1,38 @@
 import nodeResolve from 'rollup-plugin-node-resolve'
+import workbox from 'rollup-plugin-workbox-build'
 import commonjs from 'rollup-plugin-commonjs'
-import { terser } from 'rollup-plugin-terser'
+// import { terser } from 'rollup-plugin-terser'
 
 export default {
   input: 'sw-src/sw.js',
   output: [
     {
-      file: 'dist/sw-dist.js',
+      file: 'dist/sw-needsinjecting.js',
       format: 'iife',
     },
-    {
-      file: 'dist/sw-dist.min.js',
-      format: 'iife',
-      sourcemap: true,
-      plugins: [terser()], // FIXME isn't doing its thing :(
-    },
+    // FIXME isn't doing its thing :(
+    // {
+    //   file: 'dist/sw-needsinjecting.min.js',
+    //   format: 'iife',
+    //   sourcemap: true,
+    //   plugins: [terser()],
+    // },
   ],
   plugins: [
     nodeResolve(), // lets us find dependencies in node_modules
     commonjs(),
     buildGuira487Plugin(),
+    workbox({
+      // there is *very* little benefit to using this plugin for this use case.
+      // Probably easier to just use the workbox-cli
+      mode: 'injectManifest',
+      options: {
+        swSrc: 'dist/sw-needsinjecting.js',
+        swDest: 'dist/service-worker.js',
+        globDirectory: 'dist',
+        globIgnores: ['sw*'],
+      },
+    }),
   ],
 }
 

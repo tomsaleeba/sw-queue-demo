@@ -11,20 +11,22 @@
     "core-js": "^3.3.2",
     "fetch-retry": "^2.2.3",
     "localforage": "^1.7.3",
-    "magic-string": "^0.25.4",
-    "rollup": "^1.26.4",
-    "rollup-plugin-node-resolve": "^5.2.0",
-    "rollup-plugin-terser": "^5.1.2",
-    "vue": "^2.6.10",
-    "workbox-background-sync": "^4.3.1",
-    "workbox-routing": "^4.3.1",
-    "workbox-strategies": "^4.3.1"
+    "vue": "^2.6.10"
   },
   "devDependencies": {
     "@vue/cli-plugin-babel": "^4.0.0",
+    "@vue/cli-plugin-pwa": "^4.0.5",
     "@vue/cli-service": "^4.0.0",
+    "magic-string": "^0.25.4",
     "nodemon": "^1.19.4",
+    "rollup": "^1.26.4",
     "rollup-plugin-commonjs": "^10.1.0",
-    "vue-template-compiler": "^2.6.10"
+    "rollup-plugin-node-resolve": "^5.2.0",
+    "rollup-plugin-terser": "^5.1.2",
+    "rollup-plugin-workbox-build": "^0.2.0",
+    "vue-template-compiler": "^2.6.10",
+    "workbox-background-sync": "^4.3.1",
+    "workbox-routing": "^4.3.1",
+    "workbox-strategies": "^4.3.1"
   }
 }
