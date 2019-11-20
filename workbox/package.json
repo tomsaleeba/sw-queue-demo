@@ -1,11 +1,11 @@
 {
-  "name": "blah",
+  "name": "sw-queue-demo",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "serve": "vue-cli-service serve",
-    "build": "vue-cli-service build && rollup -c",
-    "build:watch": "nodemon --ext vue,js,mjs,json --watch src --watch sw-src --watch package.json --exec bash run-loop.sh"
+    "build": "vue-cli-service build && rollup -c && workbox injectManifest",
+    "build:watch": "nodemon --ext vue,js,mjs,json --watch src --watch sw-src --watch package.json --exec bash -c 'yarn build && servor dist/ index.html --no-browser'"
   },
   "dependencies": {
     "core-js": "^3.3.2",
@@ -23,9 +23,10 @@
     "rollup-plugin-commonjs": "^10.1.0",
     "rollup-plugin-node-resolve": "^5.2.0",
     "rollup-plugin-terser": "^5.1.2",
-    "rollup-plugin-workbox-build": "^0.2.0",
+    "servor": "^2.2.1",
     "vue-template-compiler": "^2.6.10",
     "workbox-background-sync": "^4.3.1",
+    "workbox-cli": "^4.3.1",
     "workbox-routing": "^4.3.1",
     "workbox-strategies": "^4.3.1"
   }
