@@ -6,6 +6,10 @@ import { NetworkOnly } from 'workbox-strategies/NetworkOnly.mjs'
 import localForage from 'localforage' // could use idb-keyval instead if we trust all indexeddb implementations will work properly
 import * as constants from '../src/constants.mjs'
 
+const obsStore = localForage.createInstance({
+  name: 'swQueueDemo-obs',
+})
+
 const createTag = 'create:'
 const updateTag = 'update:'
 const IGNORE_REMAINING_DEPS_FLAG = 'ignoreRemainingDepReqs'
@@ -44,7 +48,9 @@ const depsQueue = new Queue('obs-dependant-queue', {
             )
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${req.method}`,
+              `Programmer error: we don't know how to handle method=${
+                req.method
+              }`,
             )
         }
       },
@@ -95,7 +101,9 @@ const depsQueue = new Queue('obs-dependant-queue', {
             )
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${entry.request.method}`,
+              `Programmer error: we don't know how to handle method=${
+                entry.request.method
+              }`,
             )
         }
       },
@@ -127,7 +135,9 @@ const obsQueue = new Queue('obs-queue', {
               break
             default:
               throw new Error(
-                `Programmer error: we don't know how to handle method=${req.method}`,
+                `Programmer error: we don't know how to handle method=${
+                  req.method
+                }`,
               )
           }
         } catch (err) {
@@ -157,7 +167,7 @@ const obsQueue = new Queue('obs-queue', {
             })
             // FIXME what if we have pending PUTs or DELETEs?
             break
-            await localForage.removeItem(createTag + uniqueId)
+            await obsStore.removeItem(createTag + uniqueId)
             break
           case 'DELETE':
             // I guess it's already been deleted
@@ -172,7 +182,9 @@ const obsQueue = new Queue('obs-queue', {
             break
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${entry.request.method}`,
+              `Programmer error: we don't know how to handle method=${
+                entry.request.method
+              }`,
             )
         }
       },
@@ -273,7 +285,7 @@ async function onObsPostSuccess(obsResp) {
   // blobs. If it does, you need to reserialise them to ArrayBuffers to avoid
   // heartache.
   // https://developers.google.com/web/fundamentals/instant-and-offline/web-storage/indexeddb-best-practices#not_everything_can_be_stored_in_indexeddb_on_all_platforms
-  const depsRecord = await localForage.getItem(createTag + obsUniqueId)
+  const depsRecord = await obsStore.getItem(createTag + obsUniqueId)
   if (!depsRecord) {
     // FIXME this is probably an error. We *always* have deps!
     console.warn(`No deps found for obsUniqueId=${obsUniqueId}`)
@@ -352,7 +364,7 @@ async function onObsPostSuccess(obsResp) {
     'Cleaning up after ourselves. All requests have been generated and ' +
       `queued up for uniqueId=${obsUniqueId}, so we do not need this data anymore`,
   )
-  await localForage.removeItem(createTag + obsUniqueId)
+  await obsStore.removeItem(createTag + obsUniqueId)
 }
 
 registerRoute(
@@ -366,7 +378,7 @@ registerRoute(
       .getAll(constants.obsFieldsFieldName)
       .map(e => JSON.parse(e))
     const projectId = formData.get(constants.projectIdFieldName)
-    await localForage.setItem(createTag + obs.uniqueId, {
+    await obsStore.setItem(createTag + obs.uniqueId, {
       uniqueId: obs.uniqueId,
       photos,
       obsFields,
@@ -423,7 +435,7 @@ registerRoute(
     // POST. We could queue all the deps because we have the obsId but it's
     // easier to keep them in localForage so it's easy to clean up if anything
     // goes wrong
-    await localForage.setItem(updateTag + obs.uniqueId, {
+    await obsStore.setItem(updateTag + obs.uniqueId, {
       uniqueId: obs.uniqueId,
       newPhotos: [],
       newObsFields: [],
