@@ -48,9 +48,7 @@ const depsQueue = new Queue('obs-dependant-queue', {
             )
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${
-                req.method
-              }`,
+              `Programmer error: we don't know how to handle method=${req.method}`,
             )
         }
       },
@@ -101,9 +99,7 @@ const depsQueue = new Queue('obs-dependant-queue', {
             )
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${
-                entry.request.method
-              }`,
+              `Programmer error: we don't know how to handle method=${entry.request.method}`,
             )
         }
       },
@@ -135,9 +131,7 @@ const obsQueue = new Queue('obs-queue', {
               break
             default:
               throw new Error(
-                `Programmer error: we don't know how to handle method=${
-                  req.method
-                }`,
+                `Programmer error: we don't know how to handle method=${req.method}`,
               )
           }
         } catch (err) {
@@ -182,9 +176,7 @@ const obsQueue = new Queue('obs-queue', {
             break
           default:
             throw new Error(
-              `Programmer error: we don't know how to handle method=${
-                entry.request.method
-              }`,
+              `Programmer error: we don't know how to handle method=${entry.request.method}`,
             )
         }
       },
@@ -368,7 +360,19 @@ async function onObsPostSuccess(obsResp) {
 }
 
 registerRoute(
-  'http://local.service-worker/queue/obs-bundle',
+  constants.areYouActiveEndpoint,
+  async ({ url, event, params }) => {
+    return new Response(
+      JSON.stringify({
+        result: 'yep',
+      }),
+    )
+  },
+  'GET',
+)
+
+registerRoute(
+  constants.obsBundleEndpoint,
   async ({ url, event, params }) => {
     console.debug('Service worker processing POSTed bundle')
     const formData = await event.request.formData()
@@ -426,7 +430,7 @@ registerRoute(
 )
 
 registerRoute(
-  'http://local.service-worker/queue/obs-bundle',
+  constants.obsBundleEndpoint,
   async ({ url, event, params }) => {
     console.debug('Service worker processing PUTed bundle')
     const formData = await event.request.formData()

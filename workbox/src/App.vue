@@ -199,10 +199,7 @@ export default {
         fieldId: 89,
         value: 'sandy',
       }
-      const isNoSwSupport = !(
-        'serviceWorker' in navigator && navigator.serviceWorker.controller
-      )
-      if (isNoSwSupport) {
+      const noSwStrategy = async () => {
         console.debug('No SW support, doing it all ourselves')
         try {
           console.debug('POSTing observation')
@@ -245,30 +242,62 @@ export default {
         }
         return
       }
-      console.debug('We have SW support, POSTing bundle')
-      const fd = new FormData()
-      fd.append(constants.obsFieldName, JSON.stringify(obs))
-      fd.append(constants.photosFieldName, photo1.file, 'photo1')
-      fd.append(constants.photosFieldName, photo2.file, 'photo2')
-      fd.append(constants.obsFieldsFieldName, JSON.stringify(obsField1))
-      fd.append(constants.obsFieldsFieldName, JSON.stringify(obsField2))
-      fd.append(constants.projectIdFieldName, JSON.stringify(1234))
-      // FIXME remove param
-      const resp = await fetch('http://local.service-worker/queue/obs-bundle', {
-        method: 'POST',
-        body: fd,
-      })
-      if (resp.ok) {
-        console.log(
-          'All requests queued for obs',
-          JSON.stringify(await resp.json()),
-        )
-        this.theStatus = 'finished'
+      const isSwSupport = await this.isSwAlive()
+      if (!isSwSupport) {
+        await noSwStrategy()
         return
       }
-      // our SW enqueue code failed
-      // FIXME do we fallback to the "no service worker" approach, or retry?
-      console.error(resp.statusText)
+      try {
+        console.debug('We have SW support, POSTing bundle')
+        const fd = new FormData()
+        fd.append(constants.obsFieldName, JSON.stringify(obs))
+        fd.append(constants.photosFieldName, photo1.file, 'photo1')
+        fd.append(constants.photosFieldName, photo2.file, 'photo2')
+        fd.append(constants.obsFieldsFieldName, JSON.stringify(obsField1))
+        fd.append(constants.obsFieldsFieldName, JSON.stringify(obsField2))
+        fd.append(constants.projectIdFieldName, JSON.stringify(1234))
+        const resp = await fetch(constants.obsBundleEndpoint, {
+          method: 'POST',
+          body: fd,
+          retries: 0,
+        })
+        if (resp.ok) {
+          console.log(
+            'All requests queued for obs',
+            JSON.stringify(await resp.json()),
+          )
+          this.theStatus = 'finished (using SW)'
+          return
+        }
+        await noSwStrategy()
+        this.theStatus = 'finished (without SW)'
+        return
+      } catch (err) {
+        console.warn(
+          'Error while trying to POST bundle, falling back to no-SW strategy',
+          err,
+        )
+        try {
+          await noSwStrategy()
+          this.theStatus = 'finished (without SW)'
+        } catch (err2) {
+          console.error(
+            'failed to perform the backup plan: the no SW strategy',
+            err2,
+          )
+          this.theStatus = 'failed'
+        }
+      }
+    },
+    async isSwAlive() {
+      try {
+        const resp = await fetch(constants.areYouActiveEndpoint, {
+          retries: 0,
+        })
+        return resp.ok // if we get a response, it should be ok
+      } catch (err) {
+        return false
+      }
     },
     async refreshObs() {
       console.debug('refreshing obs list...')
