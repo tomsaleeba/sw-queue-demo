@@ -377,6 +377,8 @@ registerRoute(
     console.debug('Service worker processing POSTed bundle')
     const formData = await event.request.formData()
     const obs = JSON.parse(formData.get(constants.obsFieldName))
+    const authHeaderValue = event.request.headers.get('Authorization')
+    console.log(`Supplied auth header=${authHeaderValue}`)
     const photos = formData.getAll(constants.photosFieldName)
     const obsFields = formData
       .getAll(constants.obsFieldsFieldName)

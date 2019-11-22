@@ -260,6 +260,9 @@ export default {
           method: 'POST',
           body: fd,
           retries: 0,
+          headers: {
+            Authorization: 'Bearer somekeyblahblah',
+          },
         })
         if (resp.ok) {
           console.log(
